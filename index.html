@@ -176,6 +176,13 @@ let starting = false;
 let startingTimeout = null;
 let startingPollTimer = null;
 
+function formatDuration(ms) {
+  const totalSec = Math.round(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return min + ':' + String(sec).padStart(2, '0');
+}
+
 function updatePowerButton(active, paused) {
   btnPower.classList.remove('start', 'pause', 'resume');
   if (!active) {
@@ -230,6 +237,7 @@ function refreshStatus(alsoLoadDevices) {
       const metaParts = [];
       if (data.current.station) metaParts.push(STATION_LABELS[data.current.station] || data.current.station);
       if (data.current.playCount) metaParts.push(data.current.playCount + '× gespielt');
+      if (data.current.durationMs) metaParts.push(formatDuration(data.current.durationMs));
       npMeta.textContent = metaParts.join(' · ');
     } else {
       npTitle.textContent = '—';
