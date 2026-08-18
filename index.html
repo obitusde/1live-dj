@@ -26,6 +26,7 @@ body {
 }
 .title { font-size: 20px; font-weight: 900; letter-spacing: 0.5px; }
 .title .dj { color: #e8001c; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 .btn-icon {
   background: rgba(255,255,255,0.06); border: 1.5px solid #444; border-radius: 8px; color: #ccc;
   font-size: 16px; cursor: pointer; width: 36px; height: 36px;
@@ -33,6 +34,8 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .btn-icon:active { color: #fff; border-color: #e8001c; background: rgba(232,0,28,0.18); }
+.btn-icon:disabled { opacity: 0.35; cursor: default; }
+.btn-icon.favorite-active { color: #e8001c; border-color: #e8001c; background: rgba(232,0,28,0.18); }
 
 .now-playing {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -108,7 +111,10 @@ body {
 
 <div class="topbar">
   <div class="title">1LIVE <span class="dj">DJ</span></div>
-  <button class="btn-icon" id="btnReload" title="Neu laden">↺</button>
+  <div class="topbar-right">
+    <button class="btn-icon" id="btnFavorite" disabled title="Spotify-Favorit">♡</button>
+    <button class="btn-icon" id="btnReload" title="Neu laden">↺</button>
+  </div>
 </div>
 
 <div class="now-playing">
@@ -159,6 +165,7 @@ const btnDislike = document.getElementById('btnDislike');
 const btnSkip    = document.getElementById('btnSkip');
 const btnPower   = document.getElementById('btnPower');
 const btnEnd     = document.getElementById('btnEnd');
+const btnFavorite = document.getElementById('btnFavorite');
 const deviceRow  = document.getElementById('deviceRow');
 const stationRow = document.getElementById('stationRow');
 const bottomStatus = document.getElementById('bottomStatus');
@@ -262,13 +269,19 @@ function renderCurrent(current) {
     if (current.station) metaParts.push(STATION_LABELS[current.station] || current.station);
     if (current.playCount) metaParts.push(current.playCount + '× gespielt');
     if (current.durationMs) metaParts.push(formatDuration(current.durationMs));
-    if (current.isFavorite) metaParts.push('♥ Favorit');
     npMeta.textContent = metaParts.join(' · ');
+
+    btnFavorite.disabled = !current.uri;
+    btnFavorite.textContent = current.isFavorite ? '♥' : '♡';
+    btnFavorite.classList.toggle('favorite-active', !!current.isFavorite);
   } else {
     npTitle.textContent = '—';
     npArtist.textContent = '';
     npMeta.textContent = '';
     currentKey = null;
+    btnFavorite.disabled = true;
+    btnFavorite.textContent = '♡';
+    btnFavorite.classList.remove('favorite-active');
   }
   btnLike.disabled = !currentKey;
   btnDislike.disabled = !currentKey;
@@ -331,7 +344,25 @@ function flashSent(btn) {
 btnLike.addEventListener('click', () => {
   if (!currentKey) return;
   flashSent(btnLike);
-  api('like', { key: currentKey });
+  api('like', { key: currentKey }).then(result => {
+    if (result.ok && result.current) {
+      btnFavorite.textContent = result.current.isFavorite ? '♥' : '♡';
+      btnFavorite.classList.toggle('favorite-active', !!result.current.isFavorite);
+    }
+  });
+});
+
+btnFavorite.addEventListener('click', () => {
+  btnFavorite.disabled = true;
+  api('toggleFavorite').then(result => {
+    btnFavorite.disabled = false;
+    if (result.ok) {
+      btnFavorite.textContent = result.isFavorite ? '♥' : '♡';
+      btnFavorite.classList.toggle('favorite-active', result.isFavorite);
+    } else {
+      setBottomStatus('Fehler: ' + result.error, true);
+    }
+  });
 });
 
 btnDislike.addEventListener('click', () => {
