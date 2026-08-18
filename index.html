@@ -291,10 +291,11 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-if (!document.hidden) {
-  refreshStatus(true);
-  startPolling();
-}
+// Erster Load startet immer sofort (unabhaengig vom initialen
+// visibilityState, der ist in manchen Umgebungen beim allerersten Laden
+// nicht zuverlaessig "visible") - visibilitychange uebernimmt danach.
+refreshStatus(true);
+startPolling();
 </script>
 
 </body>
