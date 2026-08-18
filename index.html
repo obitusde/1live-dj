@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<title>1LIVE DJ</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="1LIVE DJ">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif;
+  color: #fff; height: 100dvh; display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top,0) env(safe-area-inset-right,0)
+           env(safe-area-inset-bottom,0) env(safe-area-inset-left,0);
+}
+.topbar {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 2px solid #222;
+}
+.title { font-size: 20px; font-weight: 900; letter-spacing: 0.5px; }
+.title .dj { color: #e8001c; }
+.btn-icon {
+  background: rgba(255,255,255,0.06); border: 1.5px solid #444; border-radius: 8px; color: #ccc;
+  font-size: 16px; cursor: pointer; width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-icon:active { color: #fff; border-color: #e8001c; background: rgba(232,0,28,0.18); }
+
+.now-playing {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px; gap: 8px; text-align: center;
+}
+.np-status { font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #666; }
+.np-status.live { color: #00e676; }
+.np-title { font-size: clamp(22px, 7vw, 34px); font-weight: 900; line-height: 1.2; }
+.np-artist { font-size: clamp(16px, 5vw, 22px); color: #999; font-weight: 600; }
+.np-device { font-size: 13px; color: #555; margin-top: 6px; }
+
+.feedback-row {
+  flex-shrink: 0; display: flex; gap: 14px; padding: 0 20px 18px;
+}
+.btn-feedback {
+  flex: 1; border: none; cursor: pointer; border-radius: 18px; font-family: inherit;
+  font-weight: 800; padding: 22px 0; display: flex; flex-direction: column; align-items: center;
+  gap: 6px; -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
+  transition: transform .1s, filter .1s;
+}
+.btn-feedback .ico { font-size: 30px; }
+.btn-feedback .lbl { font-size: 14px; }
+.btn-feedback:active { transform: scale(0.92); filter: brightness(1.3); }
+.btn-feedback:disabled { opacity: 0.35; cursor: default; }
+.btn-dislike { background: #1e0306; color: #ff8fa0; border: 2px solid #5a1018; }
+.btn-like    { background: #0d1e0d; color: #8fffa0; border: 2px solid #204020; }
+.btn-feedback.sent { filter: brightness(1.6); }
+
+.controls { flex-shrink: 0; padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.btn-power {
+  border: none; cursor: pointer; border-radius: 16px; font-family: inherit;
+  font-size: 18px; font-weight: 900; letter-spacing: 0.5px; padding: 18px 0;
+  -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
+  transition: transform .1s, filter .1s;
+}
+.btn-power:active { transform: scale(0.96); }
+.btn-power.start { background: #e8001c; color: #fff; box-shadow: 0 0 30px rgba(232,0,28,0.4); }
+.btn-power.stop  { background: #222; color: #ccc; border: 2px solid #444; }
+
+.device-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.device-pill {
+  flex-shrink: 0; padding: 8px 14px; border-radius: 20px; border: 1.5px solid #444;
+  background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
+  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+}
+.device-pill.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.18); }
+
+.bottom-status { flex-shrink: 0; padding: 0 16px 12px; font-size: 12px; color: #555; text-align: center; min-height: 16px; }
+.bottom-status.err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="title">1LIVE <span class="dj">DJ</span></div>
+  <button class="btn-icon" id="btnReload" title="Neu laden">↺</button>
+</div>
+
+<div class="now-playing">
+  <div class="np-status" id="npStatus">Verbinde…</div>
+  <div class="np-title" id="npTitle">—</div>
+  <div class="np-artist" id="npArtist"></div>
+  <div class="np-device" id="npDevice"></div>
+</div>
+
+<div class="feedback-row">
+  <button class="btn-feedback btn-dislike" id="btnDislike" disabled>
+    <span class="ico">👎</span><span class="lbl">nicht mehr</span>
+  </button>
+  <button class="btn-feedback btn-like" id="btnLike" disabled>
+    <span class="ico">👍</span><span class="lbl">öfter</span>
+  </button>
+</div>
+
+<div class="controls">
+  <div class="device-row" id="deviceRow"></div>
+  <button class="btn-power start" id="btnPower">▶ Station starten</button>
+</div>
+
+<div class="bottom-status" id="bottomStatus"></div>
+
+<script>
+const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbxBbH87136ak1xaEq16iz-x52AiasndeZUhFcrQYbIgNlx2NfWBA_NZlhw7SP7hx6hxrQ/exec';
+const POLL_MS = 10000;
+
+const npStatus   = document.getElementById('npStatus');
+const npTitle    = document.getElementById('npTitle');
+const npArtist   = document.getElementById('npArtist');
+const npDevice   = document.getElementById('npDevice');
+const btnLike    = document.getElementById('btnLike');
+const btnDislike = document.getElementById('btnDislike');
+const btnPower   = document.getElementById('btnPower');
+const deviceRow  = document.getElementById('deviceRow');
+const bottomStatus = document.getElementById('bottomStatus');
+const btnReload  = document.getElementById('btnReload');
+
+let currentKey = null;
+let isRunning = false;
+let pollTimer = null;
+let devicesLoaded = false;
+
+function setBottomStatus(text, isErr) {
+  bottomStatus.textContent = text || '';
+  bottomStatus.classList.toggle('err', !!isErr);
+}
+
+function api(action, params) {
+  const qs = new URLSearchParams(Object.assign({ action }, params || {}));
+  return fetch(WEBAPP_URL + '?' + qs.toString())
+    .then(r => r.json());
+}
+
+function refreshStatus() {
+  api('status').then(data => {
+    if (!data.ok) { setBottomStatus('Fehler: ' + data.error, true); return; }
+    setBottomStatus('');
+
+    isRunning = data.isPlaying;
+    if (data.current) {
+      npTitle.textContent = data.current.title;
+      npArtist.textContent = data.current.artist;
+      currentKey = data.current.key;
+    } else {
+      npTitle.textContent = '—';
+      npArtist.textContent = '';
+      currentKey = null;
+    }
+    npDevice.textContent = data.device ? ('auf ' + data.device) : '';
+
+    npStatus.textContent = data.isPlaying ? 'Läuft' : 'Gestoppt';
+    npStatus.classList.toggle('live', data.isPlaying);
+
+    btnPower.textContent = data.isPlaying ? '■ Station stoppen' : '▶ Station starten';
+    btnPower.classList.toggle('start', !data.isPlaying);
+    btnPower.classList.toggle('stop', data.isPlaying);
+
+    btnLike.disabled = !currentKey;
+    btnDislike.disabled = !currentKey;
+
+    if (!devicesLoaded) loadDevices(data.targetDeviceId);
+  }).catch(err => setBottomStatus('Verbindung fehlgeschlagen: ' + err, true));
+}
+
+function loadDevices(targetId) {
+  api('devices').then(data => {
+    if (!data.ok) return;
+    devicesLoaded = true;
+    deviceRow.innerHTML = '';
+    data.devices.forEach(d => {
+      const pill = document.createElement('button');
+      pill.className = 'device-pill' + (d.id === (targetId || data.targetDeviceId) ? ' active' : '');
+      pill.textContent = d.name;
+      pill.addEventListener('click', () => {
+        api('setDevice', { id: d.id }).then(() => {
+          devicesLoaded = false;
+          loadDevices(d.id);
+        });
+      });
+      deviceRow.appendChild(pill);
+    });
+  });
+}
+
+function flashSent(btn) {
+  btn.classList.add('sent');
+  setTimeout(() => btn.classList.remove('sent'), 400);
+}
+
+btnLike.addEventListener('click', () => {
+  if (!currentKey) return;
+  flashSent(btnLike);
+  api('like', { key: currentKey });
+});
+
+btnDislike.addEventListener('click', () => {
+  if (!currentKey) return;
+  flashSent(btnDislike);
+  api('dislike', { key: currentKey }).then(() => {
+    setTimeout(refreshStatus, 4000); // Spotify braucht kurz, bis der naechste Song laeuft
+  });
+});
+
+btnPower.addEventListener('click', () => {
+  btnPower.disabled = true;
+  const action = isRunning ? 'stopSession' : 'startSession';
+  setBottomStatus(isRunning ? 'Stoppe…' : 'Starte…');
+  api(action).then(() => {
+    btnPower.disabled = false;
+    refreshStatus();
+  }).catch(err => {
+    btnPower.disabled = false;
+    setBottomStatus('Fehler: ' + err, true);
+  });
+});
+
+btnReload.addEventListener('click', () => location.reload());
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(refreshStatus, POLL_MS);
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+refreshStatus();
+startPolling();
+</script>
+
+</body>
+</html>
