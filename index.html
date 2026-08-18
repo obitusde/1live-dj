@@ -70,9 +70,17 @@ body {
   transition: transform .1s, filter .1s;
 }
 .btn-power:active { transform: scale(0.96); }
-.btn-power.start { background: #e8001c; color: #fff; box-shadow: 0 0 30px rgba(232,0,28,0.4); }
-.btn-power.stop  { background: #222; color: #ccc; border: 2px solid #444; }
+.btn-power.start  { background: #e8001c; color: #fff; box-shadow: 0 0 30px rgba(232,0,28,0.4); }
+.btn-power.pause  { background: #222; color: #ccc; border: 2px solid #444; }
+.btn-power.resume { background: #00e676; color: #000; box-shadow: 0 0 30px rgba(0,230,118,0.35); }
 .btn-power:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
+
+.btn-end {
+  border: none; background: none; color: #555; font-family: inherit;
+  font-size: 13px; font-weight: 700; padding: 6px 0; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; text-decoration: underline;
+}
+.btn-end:disabled { opacity: 0.3; cursor: default; text-decoration: none; }
 
 .btn-skip {
   border: 1.5px solid #444; cursor: pointer; border-radius: 14px; font-family: inherit;
@@ -131,6 +139,7 @@ body {
     <div class="device-row" id="deviceRow"></div>
   </div>
   <button class="btn-power start" id="btnPower">▶ Station starten</button>
+  <button class="btn-end" id="btnEnd" disabled>Ganz beenden</button>
 </div>
 
 <div class="bottom-status" id="bottomStatus"></div>
@@ -149,6 +158,7 @@ const btnLike    = document.getElementById('btnLike');
 const btnDislike = document.getElementById('btnDislike');
 const btnSkip    = document.getElementById('btnSkip');
 const btnPower   = document.getElementById('btnPower');
+const btnEnd     = document.getElementById('btnEnd');
 const deviceRow  = document.getElementById('deviceRow');
 const stationRow = document.getElementById('stationRow');
 const bottomStatus = document.getElementById('bottomStatus');
@@ -158,10 +168,26 @@ const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3' 
 
 let currentKey = null;
 let isRunning = false;
+let isPaused = false;
+let sessionActive = false;
 let pollTimer = null;
 let tickCount = 0;
 let starting = false;
 let startingTimeout = null;
+
+function updatePowerButton(active, paused) {
+  btnPower.classList.remove('start', 'pause', 'resume');
+  if (!active) {
+    btnPower.textContent = '▶ Station starten';
+    btnPower.classList.add('start');
+  } else if (paused) {
+    btnPower.textContent = '▶ Fortsetzen';
+    btnPower.classList.add('resume');
+  } else {
+    btnPower.textContent = '⏸ Pause';
+    btnPower.classList.add('pause');
+  }
+}
 
 function setBottomStatus(text, isErr) {
   bottomStatus.textContent = text || '';
@@ -182,6 +208,8 @@ function refreshStatus(alsoLoadDevices) {
     if (!data.ok) { setBottomStatus('Fehler: ' + data.error, true); return; }
 
     isRunning = data.isPlaying;
+    isPaused = data.isPaused;
+    sessionActive = data.sessionActive;
 
     // "Starten" laeuft im Hintergrund (Backend antwortet sofort, die
     // eigentliche Auswahl+Wiedergabe braucht noch etwas) - solange das noch
@@ -211,13 +239,12 @@ function refreshStatus(alsoLoadDevices) {
 
     if (!starting) {
       setBottomStatus('');
-      npStatus.textContent = data.isPlaying ? 'Läuft' : 'Gestoppt';
+      npStatus.textContent = data.isPlaying ? 'Läuft' : (data.isPaused ? 'Pausiert' : 'Gestoppt');
       npStatus.classList.toggle('live', data.isPlaying);
 
-      btnPower.textContent = data.isPlaying ? '■ Station stoppen' : '▶ Station starten';
-      btnPower.classList.toggle('start', !data.isPlaying);
-      btnPower.classList.toggle('stop', data.isPlaying);
+      updatePowerButton(data.sessionActive, data.isPaused);
       btnPower.disabled = false;
+      btnEnd.disabled = !data.sessionActive;
     }
 
     btnLike.disabled = !currentKey;
@@ -246,22 +273,34 @@ function loadDevices(targetId) {
 
 // Sender sind unabhaengig ein-/ausschaltbar (nicht wie Geraete exklusiv) -
 // bei mehreren aktiven werden die Playlists gemischt (siehe Backend).
+// knownStations wird nur beim ersten Laden geholt (Label/ID aendern sich
+// nicht); ein Klick zum Umschalten braucht danach nur noch einen einzigen
+// Call (setStations liefert die neue aktive Liste direkt mit), statt einen
+// zweiten stations-Call hinterherzuschicken - war spuerbar traege.
+let knownStations = [];
+
+function renderStationPills(activeIds) {
+  stationRow.innerHTML = '';
+  knownStations.forEach(s => {
+    const pill = document.createElement('button');
+    pill.className = 'device-pill' + (activeIds.indexOf(s.id) !== -1 ? ' active' : '');
+    pill.textContent = s.label;
+    pill.addEventListener('click', () => {
+      const idx = activeIds.indexOf(s.id);
+      const next = idx === -1 ? activeIds.concat(s.id) : activeIds.filter(id => id !== s.id);
+      api('setStations', { stations: next.join(',') }).then(result => {
+        if (result.ok) renderStationPills(result.stations);
+      });
+    });
+    stationRow.appendChild(pill);
+  });
+}
+
 function loadStations() {
   api('stations').then(data => {
     if (!data.ok) return;
-    stationRow.innerHTML = '';
-    data.stations.forEach(s => {
-      const pill = document.createElement('button');
-      pill.className = 'device-pill' + (s.active ? ' active' : '');
-      pill.textContent = s.label;
-      pill.addEventListener('click', () => {
-        const activeIds = data.stations.filter(x => x.active).map(x => x.id);
-        const idx = activeIds.indexOf(s.id);
-        if (idx === -1) activeIds.push(s.id); else activeIds.splice(idx, 1);
-        api('setStations', { stations: activeIds.join(',') }).then(loadStations);
-      });
-      stationRow.appendChild(pill);
-    });
+    knownStations = data.stations.map(s => ({ id: s.id, label: s.label }));
+    renderStationPills(data.stations.filter(s => s.active).map(s => s.id));
   });
 }
 
@@ -291,24 +330,30 @@ btnSkip.addEventListener('click', () => {
 });
 
 btnPower.addEventListener('click', () => {
-  if (isRunning) {
-    // Stoppen ist schnell (nur eine Pause-Anfrage, kein Playlist-Scrape).
+  if (sessionActive && isPaused) {
+    // Fortsetzen ist schnell (nur ein Play-Aufruf, kein Playlist-Scrape).
     btnPower.disabled = true;
-    setBottomStatus('Stoppe…');
-    api('stopSession').then(() => {
-      btnPower.disabled = false;
-      refreshStatus();
-    }).catch(err => {
-      btnPower.disabled = false;
-      setBottomStatus('Fehler: ' + err, true);
-    });
+    setBottomStatus('Setze fort…');
+    api('resume').then(() => { btnPower.disabled = false; refreshStatus(); })
+      .catch(err => { btnPower.disabled = false; setBottomStatus('Fehler: ' + err, true); });
     return;
   }
 
-  // Starten: Backend antwortet sofort, die eigentliche Auswahl (Playlist
-  // scrapen, Spotify durchsuchen) laeuft im Hintergrund und dauert bis zu
-  // einer Minute - Button bleibt bis dahin sichtbar im "startet"-Zustand,
-  // statt so zu wirken, als waere der Tap ignoriert worden.
+  if (sessionActive) {
+    // Pause ist schnell (nur ein Pause-Aufruf) und beendet die Session
+    // NICHT - Fortsetzen bleibt dadurch danach ebenfalls schnell.
+    btnPower.disabled = true;
+    setBottomStatus('Pausiere…');
+    api('pause').then(() => { btnPower.disabled = false; refreshStatus(); })
+      .catch(err => { btnPower.disabled = false; setBottomStatus('Fehler: ' + err, true); });
+    return;
+  }
+
+  // Starten (aus komplett gestopptem Zustand): Backend antwortet sofort,
+  // die eigentliche Auswahl (Playlist scrapen, Spotify durchsuchen) laeuft
+  // im Hintergrund und dauert bis zu einer Minute - Button bleibt bis dahin
+  // sichtbar im "startet"-Zustand, statt so zu wirken, als waere der Tap
+  // ignoriert worden.
   starting = true;
   btnPower.disabled = true;
   btnPower.textContent = '… wird gestartet';
@@ -328,6 +373,13 @@ btnPower.addEventListener('click', () => {
       setBottomStatus('Dauert länger als erwartet – nochmal versuchen?', true);
     }
   }, 90000);
+});
+
+btnEnd.addEventListener('click', () => {
+  btnEnd.disabled = true;
+  setBottomStatus('Beende…');
+  api('stopSession').then(() => refreshStatus())
+    .catch(err => setBottomStatus('Fehler: ' + err, true));
 });
 
 btnReload.addEventListener('click', () => location.reload());
