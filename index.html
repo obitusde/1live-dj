@@ -155,8 +155,11 @@ function setBottomStatus(text, isErr) {
 }
 
 function api(action, params) {
-  const qs = new URLSearchParams(Object.assign({ action }, params || {}));
-  return fetch(WEBAPP_URL + '?' + qs.toString())
+  // _t verhindert, dass Googles Edge-Cache identische GET-URLs (gleiche
+  // action+params) mit einer alten Antwort beantwortet, statt den Call
+  // wirklich serverseitig neu auszufuehren.
+  const qs = new URLSearchParams(Object.assign({ action, _t: Date.now() }, params || {}));
+  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' })
     .then(r => r.json());
 }
 
