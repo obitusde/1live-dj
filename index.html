@@ -128,7 +128,8 @@ body {
 
 <script>
 const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbxBbH87136ak1xaEq16iz-x52AiasndeZUhFcrQYbIgNlx2NfWBA_NZlhw7SP7hx6hxrQ/exec';
-const POLL_MS = 10000;
+const POLL_MS = 20000;
+const DEVICE_POLL_EVERY = 3; // Geraeteliste nur bei jedem 3. Status-Poll auffrischen (~60s)
 
 const npStatus   = document.getElementById('npStatus');
 const npTitle    = document.getElementById('npTitle');
@@ -148,6 +149,7 @@ const STATION_LABELS = { '1live': '1LIVE', 'br3': 'Bayern 3' };
 let currentKey = null;
 let isRunning = false;
 let pollTimer = null;
+let tickCount = 0;
 
 function setBottomStatus(text, isErr) {
   bottomStatus.textContent = text || '';
@@ -163,7 +165,7 @@ function api(action, params) {
     .then(r => r.json());
 }
 
-function refreshStatus() {
+function refreshStatus(alsoLoadDevices) {
   api('status').then(data => {
     if (!data.ok) { setBottomStatus('Fehler: ' + data.error, true); return; }
     setBottomStatus('');
@@ -197,7 +199,7 @@ function refreshStatus() {
     btnDislike.disabled = !currentKey;
     btnSkip.disabled = !data.isPlaying;
 
-    loadDevices(data.targetDeviceId);
+    if (alsoLoadDevices !== false) loadDevices(data.targetDeviceId);
   }).catch(err => setBottomStatus('Verbindung fehlgeschlagen: ' + err, true));
 }
 
@@ -257,17 +259,42 @@ btnPower.addEventListener('click', () => {
 
 btnReload.addEventListener('click', () => location.reload());
 
-function startPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(refreshStatus, POLL_MS);
+function tick() {
+  tickCount++;
+  refreshStatus(tickCount % DEVICE_POLL_EVERY === 0);
 }
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(tick, POLL_MS);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// Sobald die Seite/App nicht sichtbar ist (Bildschirm aus, andere App im
+// Vordergrund, Tab gewechselt), komplett aufhoeren zu pollen statt uns auf
+// Browser-Throttling zu verlassen - beim Zurueckkommen sofort einmal
+// aktualisieren und weiterpollen.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    tickCount = 0;
+    refreshStatus(true);
+    startPolling();
+  }
+});
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-refreshStatus();
-startPolling();
+if (!document.hidden) {
+  refreshStatus(true);
+  startPolling();
+}
 </script>
 
 </body>
