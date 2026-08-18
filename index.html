@@ -174,6 +174,7 @@ let pollTimer = null;
 let tickCount = 0;
 let starting = false;
 let startingTimeout = null;
+let startingPollTimer = null;
 
 function updatePowerButton(active, paused) {
   btnPower.classList.remove('start', 'pause', 'resume');
@@ -218,6 +219,7 @@ function refreshStatus(alsoLoadDevices) {
     if (starting && data.isPlaying) {
       starting = false;
       clearTimeout(startingTimeout);
+      clearInterval(startingPollTimer);
     }
 
     if (data.current) {
@@ -365,12 +367,25 @@ btnPower.addEventListener('click', () => {
     setBottomStatus('Fehler: ' + err, true);
   });
 
+  // Waehrend des Startens zusaetzlich zum normalen Poll-Intervall (das bei
+  // versteckter Seite/gesperrtem Bildschirm pausiert) alle 10s pruefen -
+  // sonst kann die Anzeige haengen bleiben, wenn man z.B. kurz zu Spotify
+  // wechselt um nachzuschauen und die Seite dabei in den Hintergrund geht.
+  clearInterval(startingPollTimer);
+  startingPollTimer = setInterval(() => {
+    if (!starting) { clearInterval(startingPollTimer); return; }
+    refreshStatus(false);
+  }, 10000);
+
   clearTimeout(startingTimeout);
   startingTimeout = setTimeout(() => {
     if (starting) {
       starting = false;
-      btnPower.disabled = false;
-      setBottomStatus('Dauert länger als erwartet – nochmal versuchen?', true);
+      clearInterval(startingPollTimer);
+      // Echten aktuellen Stand nachladen und normal anzeigen, statt pauschal
+      // eine Fehlermeldung zu zeigen, die falsch waere, falls es zwischen-
+      // zeitlich doch geklappt hat und nur kein Poll das mitbekommen hat.
+      refreshStatus();
     }
   }, 90000);
 });
