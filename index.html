@@ -83,7 +83,8 @@ body {
 .btn-skip:active { transform: scale(0.97); color: #fff; border-color: #666; }
 .btn-skip:disabled { opacity: 0.35; cursor: default; }
 
-.device-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.pill-label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #555; margin-bottom: 4px; }
+.device-row, .station-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
 .device-pill {
   flex-shrink: 0; padding: 8px 14px; border-radius: 20px; border: 1.5px solid #444;
   background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
@@ -121,7 +122,14 @@ body {
 
 <div class="controls">
   <button class="btn-skip" id="btnSkip" disabled>⏭ Skip</button>
-  <div class="device-row" id="deviceRow"></div>
+  <div>
+    <div class="pill-label">Sender</div>
+    <div class="station-row" id="stationRow"></div>
+  </div>
+  <div>
+    <div class="pill-label">Gerät</div>
+    <div class="device-row" id="deviceRow"></div>
+  </div>
   <button class="btn-power start" id="btnPower">▶ Station starten</button>
 </div>
 
@@ -142,10 +150,11 @@ const btnDislike = document.getElementById('btnDislike');
 const btnSkip    = document.getElementById('btnSkip');
 const btnPower   = document.getElementById('btnPower');
 const deviceRow  = document.getElementById('deviceRow');
+const stationRow = document.getElementById('stationRow');
 const bottomStatus = document.getElementById('bottomStatus');
 const btnReload  = document.getElementById('btnReload');
 
-const STATION_LABELS = { '1live': '1LIVE', 'br3': 'Bayern 3' };
+const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3' };
 
 let currentKey = null;
 let isRunning = false;
@@ -231,6 +240,27 @@ function loadDevices(targetId) {
         api('setDevice', { id: d.id }).then(() => loadDevices(d.id));
       });
       deviceRow.appendChild(pill);
+    });
+  });
+}
+
+// Sender sind unabhaengig ein-/ausschaltbar (nicht wie Geraete exklusiv) -
+// bei mehreren aktiven werden die Playlists gemischt (siehe Backend).
+function loadStations() {
+  api('stations').then(data => {
+    if (!data.ok) return;
+    stationRow.innerHTML = '';
+    data.stations.forEach(s => {
+      const pill = document.createElement('button');
+      pill.className = 'device-pill' + (s.active ? ' active' : '');
+      pill.textContent = s.label;
+      pill.addEventListener('click', () => {
+        const activeIds = data.stations.filter(x => x.active).map(x => x.id);
+        const idx = activeIds.indexOf(s.id);
+        if (idx === -1) activeIds.push(s.id); else activeIds.splice(idx, 1);
+        api('setStations', { stations: activeIds.join(',') }).then(loadStations);
+      });
+      stationRow.appendChild(pill);
     });
   });
 }
@@ -338,6 +368,7 @@ if ('serviceWorker' in navigator) {
 // visibilityState, der ist in manchen Umgebungen beim allerersten Laden
 // nicht zuverlaessig "visible") - visibilitychange uebernimmt danach.
 refreshStatus(true);
+loadStations();
 startPolling();
 </script>
 
