@@ -72,6 +72,7 @@ body {
 .btn-power:active { transform: scale(0.96); }
 .btn-power.start { background: #e8001c; color: #fff; box-shadow: 0 0 30px rgba(232,0,28,0.4); }
 .btn-power.stop  { background: #222; color: #ccc; border: 2px solid #444; }
+.btn-power:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
 
 .btn-skip {
   border: 1.5px solid #444; cursor: pointer; border-radius: 14px; font-family: inherit;
@@ -150,6 +151,8 @@ let currentKey = null;
 let isRunning = false;
 let pollTimer = null;
 let tickCount = 0;
+let starting = false;
+let startingTimeout = null;
 
 function setBottomStatus(text, isErr) {
   bottomStatus.textContent = text || '';
@@ -168,9 +171,18 @@ function api(action, params) {
 function refreshStatus(alsoLoadDevices) {
   api('status').then(data => {
     if (!data.ok) { setBottomStatus('Fehler: ' + data.error, true); return; }
-    setBottomStatus('');
 
     isRunning = data.isPlaying;
+
+    // "Starten" laeuft im Hintergrund (Backend antwortet sofort, die
+    // eigentliche Auswahl+Wiedergabe braucht noch etwas) - solange das noch
+    // nicht bestaetigt ist, bleibt der eigene Status-Text/Button-Zustand
+    // stehen, statt zwischendurch faelschlich "Gestoppt" zu zeigen.
+    if (starting && data.isPlaying) {
+      starting = false;
+      clearTimeout(startingTimeout);
+    }
+
     if (data.current) {
       npTitle.textContent = data.current.title;
       npArtist.textContent = data.current.artist;
@@ -188,12 +200,16 @@ function refreshStatus(alsoLoadDevices) {
     }
     npDevice.textContent = data.device ? ('auf ' + data.device) : '';
 
-    npStatus.textContent = data.isPlaying ? 'Läuft' : 'Gestoppt';
-    npStatus.classList.toggle('live', data.isPlaying);
+    if (!starting) {
+      setBottomStatus('');
+      npStatus.textContent = data.isPlaying ? 'Läuft' : 'Gestoppt';
+      npStatus.classList.toggle('live', data.isPlaying);
 
-    btnPower.textContent = data.isPlaying ? '■ Station stoppen' : '▶ Station starten';
-    btnPower.classList.toggle('start', !data.isPlaying);
-    btnPower.classList.toggle('stop', data.isPlaying);
+      btnPower.textContent = data.isPlaying ? '■ Station stoppen' : '▶ Station starten';
+      btnPower.classList.toggle('start', !data.isPlaying);
+      btnPower.classList.toggle('stop', data.isPlaying);
+      btnPower.disabled = false;
+    }
 
     btnLike.disabled = !currentKey;
     btnDislike.disabled = !currentKey;
@@ -245,16 +261,43 @@ btnSkip.addEventListener('click', () => {
 });
 
 btnPower.addEventListener('click', () => {
+  if (isRunning) {
+    // Stoppen ist schnell (nur eine Pause-Anfrage, kein Playlist-Scrape).
+    btnPower.disabled = true;
+    setBottomStatus('Stoppe…');
+    api('stopSession').then(() => {
+      btnPower.disabled = false;
+      refreshStatus();
+    }).catch(err => {
+      btnPower.disabled = false;
+      setBottomStatus('Fehler: ' + err, true);
+    });
+    return;
+  }
+
+  // Starten: Backend antwortet sofort, die eigentliche Auswahl (Playlist
+  // scrapen, Spotify durchsuchen) laeuft im Hintergrund und dauert bis zu
+  // einer Minute - Button bleibt bis dahin sichtbar im "startet"-Zustand,
+  // statt so zu wirken, als waere der Tap ignoriert worden.
+  starting = true;
   btnPower.disabled = true;
-  const action = isRunning ? 'stopSession' : 'startSession';
-  setBottomStatus(isRunning ? 'Stoppe…' : 'Starte…');
-  api(action).then(() => {
-    btnPower.disabled = false;
-    refreshStatus();
-  }).catch(err => {
+  btnPower.textContent = '… wird gestartet';
+  setBottomStatus('Starte… (kann bis zu 1 Minute dauern)');
+
+  api('startSession').catch(err => {
+    starting = false;
     btnPower.disabled = false;
     setBottomStatus('Fehler: ' + err, true);
   });
+
+  clearTimeout(startingTimeout);
+  startingTimeout = setTimeout(() => {
+    if (starting) {
+      starting = false;
+      btnPower.disabled = false;
+      setBottomStatus('Dauert länger als erwartet – nochmal versuchen?', true);
+    }
+  }, 90000);
 });
 
 btnReload.addEventListener('click', () => location.reload());
