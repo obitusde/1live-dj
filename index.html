@@ -229,22 +229,7 @@ function refreshStatus(alsoLoadDevices) {
       clearInterval(startingPollTimer);
     }
 
-    if (data.current) {
-      npTitle.textContent = data.current.title;
-      npArtist.textContent = data.current.artist;
-      currentKey = data.current.key;
-
-      const metaParts = [];
-      if (data.current.station) metaParts.push(STATION_LABELS[data.current.station] || data.current.station);
-      if (data.current.playCount) metaParts.push(data.current.playCount + '× gespielt');
-      if (data.current.durationMs) metaParts.push(formatDuration(data.current.durationMs));
-      npMeta.textContent = metaParts.join(' · ');
-    } else {
-      npTitle.textContent = '—';
-      npArtist.textContent = '';
-      npMeta.textContent = '';
-      currentKey = null;
-    }
+    renderCurrent(data.current);
     npDevice.textContent = data.device ? ('auf ' + data.device) : '';
 
     if (!starting) {
@@ -257,12 +242,36 @@ function refreshStatus(alsoLoadDevices) {
       btnEnd.disabled = !data.sessionActive;
     }
 
-    btnLike.disabled = !currentKey;
-    btnDislike.disabled = !currentKey;
     btnSkip.disabled = !data.isPlaying;
 
     if (alsoLoadDevices !== false) loadDevices(data.targetDeviceId);
   }).catch(err => setBottomStatus('Verbindung fehlgeschlagen: ' + err, true));
+}
+
+// Getrennt von refreshStatus aufrufbar, damit Skip/Dislike den naechsten
+// Song SOFORT aus der eigenen Server-Antwort anzeigen koennen, statt auf
+// einen weiteren Status-Poll warten zu muessen (siehe advanceQueueState_
+// im Backend).
+function renderCurrent(current) {
+  if (current) {
+    npTitle.textContent = current.title;
+    npArtist.textContent = current.artist;
+    currentKey = current.key;
+
+    const metaParts = [];
+    if (current.station) metaParts.push(STATION_LABELS[current.station] || current.station);
+    if (current.playCount) metaParts.push(current.playCount + '× gespielt');
+    if (current.durationMs) metaParts.push(formatDuration(current.durationMs));
+    if (current.isFavorite) metaParts.push('♥ Favorit');
+    npMeta.textContent = metaParts.join(' · ');
+  } else {
+    npTitle.textContent = '—';
+    npArtist.textContent = '';
+    npMeta.textContent = '';
+    currentKey = null;
+  }
+  btnLike.disabled = !currentKey;
+  btnDislike.disabled = !currentKey;
 }
 
 function loadDevices(targetId) {
@@ -329,14 +338,21 @@ btnDislike.addEventListener('click', () => {
   if (!currentKey) return;
   flashSent(btnDislike);
   // Dislike stoesst serverseitig auch gleich einen Skip an, Song stoppt sofort.
-  api('dislike', { key: currentKey }).then(() => {
-    setTimeout(refreshStatus, 4000); // Spotify braucht kurz, bis der naechste Song laeuft
+  // Der naechste Song kommt direkt in der Antwort mit (Backend kennt ihn ja
+  // selbst, siehe advanceQueueState_) - keine Wartezeit noetig, nur zur
+  // Sicherheit kurz danach den echten Spotify-Status nachgleichen.
+  api('dislike', { key: currentKey }).then(result => {
+    if (result.current) renderCurrent(result.current);
+    setTimeout(refreshStatus, 3000);
   });
 });
 
 btnSkip.addEventListener('click', () => {
   btnSkip.disabled = true;
-  api('skip').then(() => setTimeout(refreshStatus, 2000));
+  api('skip').then(result => {
+    if (result.current) renderCurrent(result.current);
+    setTimeout(refreshStatus, 3000);
+  });
 });
 
 btnPower.addEventListener('click', () => {
