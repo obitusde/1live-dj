@@ -27,9 +27,10 @@ body {
   padding-top: env(safe-area-inset-top, 0);
   padding-right: env(safe-area-inset-right, 0);
   padding-left: env(safe-area-inset-left, 0);
-  /* Untere Gestensteuerung/Notch: mindestens 8px, sonst klebt der
-     Beenden-Knopf am Bildschirmrand. */
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+  /* Untere Gestensteuerung/Notch. Android meldet env() bei Gestennavigation
+     nicht zuverlaessig, deshalb ein fester Mindestabstand - mit 8px klebte
+     die Statuszeile noch am unteren Rand. */
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 22px);
 }
 
 .topbar {
@@ -157,6 +158,7 @@ body {
 .statusline {
   flex: 0 0 auto; padding: 8px 16px 2px; font-size: 12px; color: #777; text-align: center;
   cursor: pointer; -webkit-tap-highlight-color: transparent; min-height: 26px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .statusline .dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #444;
@@ -299,7 +301,31 @@ function setBusy(text) {
   render();
 }
 
+let curSong = null;
+
+// Ohne laufenden Song stand hier nur ein Gedankenstrich in einer riesigen
+// schwarzen Flaeche - das sah aus wie ein Absturz. Jetzt steht dort, woran
+// man ist.
+function paintIdle() {
+  if (!st || !st.ok) { npTitle.textContent = '—'; npArtist.textContent = ''; npMeta.textContent = ''; return; }
+  if (st.phase === 'device_gone') {
+    npTitle.textContent = 'Spotify öffnen';
+    npArtist.textContent = (st.targetDeviceName || 'Zielgerät') + ' ist nicht erreichbar';
+  } else if (st.phase === 'error') {
+    npTitle.textContent = 'Kurz gestört';
+    npArtist.textContent = 'versuche es gleich erneut';
+  } else if (st.phase === 'paused') {
+    npTitle.textContent = 'Pausiert';
+    npArtist.textContent = '';
+  } else {
+    npTitle.textContent = 'Bereit';
+    npArtist.textContent = (st.poolFresh || 0) + ' neue Songs';
+  }
+  npMeta.textContent = '';
+}
+
 function renderCurrent(cur) {
+  curSong = cur || null;
   if (cur) {
     npTitle.textContent = cur.title || '—';
     npArtist.textContent = cur.artist || '';
@@ -490,13 +516,17 @@ function render() {
     btnPower.disabled = false;
   }
 
-  btnEnd.disabled = busy || !(st && st.sessionActive);
+  // Immer tippbar: das ist der Notausgang, der Session, Pause-Flag und
+  // Warteschlangen-Zustand serverseitig zuruecksetzt.
+  btnEnd.disabled = !!busy;
   btnSkip.disabled = busy || !(st && st.isPlaying);
 
   if (st) {
     deviceCurrent.textContent = st.device || st.targetDeviceName || '–';
     deviceCurrent.style.color = (st.targetOnline === false) ? '#ff8fa0' : '#999';
   }
+
+  if (!curSong || !(st && st.ok && (st.isPlaying || st.phase === 'paused'))) paintIdle();
 
   renderAlert();
   renderDetails();
@@ -532,8 +562,27 @@ function scheduleNext() {
   pollTimer = setTimeout(refresh, delay);
 }
 
-function refresh() {
+// Letzten guten Zustand behalten und den Fehler nur darueberlegen. Vorher
+// ersetzte eine Fehlerantwort das komplette st - dadurch verschwanden Sender,
+// Geraet und Vorratszahlen aus der Anzeige.
+function setSoftError(message, phase) {
+  st = Object.assign({}, st || {}, { ok: true, phase: phase || 'error', message: message });
+  render();
+}
+
+function refresh(isRetry) {
   return api('status').then(data => {
+    if (!data.ok && data.code === 'BAD_RESPONSE' && !isRetry) {
+      // Googles Frontend liefert sporadisch eine Fehlerseite statt unserer
+      // Antwort. Einmal still nachfassen, bevor der Nutzer davon erfaehrt.
+      setTimeout(() => refresh(true), 2000);
+      return;
+    }
+    if (!data.ok) {
+      setSoftError(data.message || 'Verbindung gestört', 'error');
+      scheduleNext();
+      return;
+    }
     st = data;
     if (data.ok) {
       progressBase = (typeof data.progressMs === 'number') ? data.progressMs : null;
@@ -553,8 +602,7 @@ function refresh() {
     tick();
     scheduleNext();
   }).catch(err => {
-    st = { ok: false, message: 'Keine Verbindung: ' + err.message, phase: 'error' };
-    render();
+    setSoftError('Keine Verbindung: ' + err.message, 'error');
     scheduleNext();
   });
 }
