@@ -242,6 +242,10 @@ const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbxBbH87136ak1xaEq16i
 const IDLE_POLL_MS  = 20000;  // nichts laeuft: gemaechlich nachsehen
 const ERROR_POLL_MS = 12000;  // Problemzustand: etwas haeufiger
 const MIN_POLL_MS   = 6000;
+// Aelter als das gilt die Anzeige als ueberholt. Beim Zurueckwechseln aus
+// einer anderen App ist der letzte Stand oft Minuten alt - ihn so lange
+// weiterzuzeigen, als waere er aktuell, ist schlimmer als ihn auszublenden.
+const STALE_MS      = 35000;
 const MAX_POLL_MS   = 30000;
 
 const $ = id => document.getElementById(id);
@@ -331,10 +335,23 @@ function renderCurrent(cur) {
     npArtist.textContent = cur.artist || '';
     currentKey = cur.key || null;
 
-    const parts = [];
-    if (cur.station) parts.push(STATION_LABELS[cur.station] || cur.station);
-    if (cur.playCount) parts.push(cur.playCount + '× gespielt');
-    npMeta.textContent = parts.join(' · ');
+    if (cur.mismatch) {
+      // Der Sheet-Eintrag zeigte auf einen anderen Track. Angezeigt wird oben
+      // das, was Spotify wirklich spielt - hier steht, was es haette sein
+      // sollen und dass der Eintrag repariert wurde.
+      npMeta.textContent = '⚠ Eintrag „' + cur.mismatch + '" war falsch verknüpft – korrigiert';
+      npMeta.style.color = '#ffb300';
+    } else {
+      const parts = [];
+      // Ohne Sheet-Key stammt der Song nicht von uns, sondern aus Spotifys
+      // eigener Warteschlange (Reste frueherer Sitzungen). Dann sind auch
+      // 👍/👎 wirkungslos - das soll man sehen, statt zu raten.
+      if (!cur.key) parts.push('aus Spotifys Warteschlange');
+      if (cur.station) parts.push(STATION_LABELS[cur.station] || cur.station);
+      if (cur.playCount) parts.push(cur.playCount + '× gespielt');
+      npMeta.textContent = parts.join(' · ');
+      npMeta.style.color = '';
+    }
 
     btnFavorite.disabled = !cur.uri;
     favIcon.textContent = cur.isFavorite ? '♥' : '♡';
@@ -486,8 +503,12 @@ function render() {
     else if (st.phase === 'paused') cls = 'paused';
     else if (st.phase === 'device_gone' || st.phase === 'error') cls = 'trouble';
   }
+  // Lieber "ich schaue gerade nach" als eine Angabe, die nicht mehr stimmt.
+  if (!busy && isStale()) { cls = 'busy'; text = 'Aktualisiere…'; }
+
   statusLine.className = 'statusline ' + cls;
   statusLine.innerHTML = '<span class="dot"></span>' + escapeHtml(text);
+  document.querySelector('.now-playing').style.opacity = (!busy && isStale()) ? '0.35' : '';
 
   const phase = busy ? 'busy' : (st && st.ok ? st.phase : 'idle');
 
@@ -533,8 +554,16 @@ function render() {
 }
 
 // ── Fortschritt lokal weiterzaehlen ──────────────────────────
+// Der Fortschritt wird lokal hochgezaehlt. Nach einer Pause im Hintergrund
+// waere die hochgerechnete Position frei erfunden - dann lieber nichts zeigen.
+function isStale() {
+  if (!st || !st.ok) return false;
+  if (st.phase !== 'playing' && st.phase !== 'paused') return false;
+  return !progressAt || (Date.now() - progressAt) > STALE_MS;
+}
+
 function tick() {
-  if (!st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null) {
+  if (isStale() || !st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null) {
     progressWrap.classList.add('hidden');
     return;
   }
@@ -732,8 +761,16 @@ btnReload.addEventListener('click', () => location.reload());
 
 // Bei versteckter Seite gar nicht pollen; beim Zurueckkommen sofort einmal.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { clearTimeout(pollTimer); clearInterval(tickTimer); tickTimer = null; }
-  else { if (!tickTimer) tickTimer = setInterval(tick, 500); refresh(); }
+  if (document.hidden) {
+    clearTimeout(pollTimer); clearInterval(tickTimer); tickTimer = null;
+  } else {
+    if (!tickTimer) tickTimer = setInterval(tick, 500);
+    // Sofort sichtbar machen, dass der angezeigte Stand von vorhin ist -
+    // der Abruf braucht ein paar Sekunden, und genau in diesem Fenster stand
+    // bisher der alte Song da, als liefe er gerade.
+    render(); tick();
+    refresh();
+  }
 });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
