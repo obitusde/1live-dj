@@ -272,9 +272,25 @@ function fmt(ms) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
+let lastBadResponse = null;
+
+// Apps Script liefert gelegentlich eine HTML-Seite statt JSON - das passiert
+// in Googles HTTP-Schicht, nicht im Skript. Frueher landete das als rohes
+// "Unexpected token '<'" beim Nutzer, obwohl die Aktion serverseitig
+// erfolgreich war. Jetzt wird daraus ein sauberer Zustand, den der Aufrufer
+// durch Nachfragen aufloesen kann.
 function api(action, params) {
   const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
-  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' }).then(r => r.json());
+  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' })
+    .then(r => r.text().then(text => {
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        lastBadResponse = { at: Date.now(), action: action, status: r.status, snippet: text.slice(0, 100) };
+        return { ok: false, code: 'BAD_RESPONSE',
+                 message: 'Server hat keine lesbare Antwort geschickt (HTTP ' + r.status + ')' };
+      }
+    }));
 }
 
 // ── Anzeige ──────────────────────────────────────────────────
@@ -411,6 +427,11 @@ function renderDetails() {
   h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || st.targetDeviceName || '–') +
        '<br>Warteschlange: ' + (st.queueAhead || 0) +
        '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') + '<br>';
+  if (lastBadResponse) {
+    h += '<br><b style="color:#ff8fa0">Unlesbare Serverantwort</b><br>' +
+         new Date(lastBadResponse.at).toLocaleTimeString('de-DE') + ' · ' + escapeHtml(lastBadResponse.action) +
+         ' · HTTP ' + lastBadResponse.status + '<br>' + escapeHtml(lastBadResponse.snippet) + '<br>';
+  }
   if (st.lastError) {
     h += '<br><b style="color:#ff8fa0">Letzter Fehler</b><br>' +
          new Date(st.lastError.at).toLocaleTimeString('de-DE') + ' [' +
@@ -555,6 +576,11 @@ function doStart() {
       render();
       tick();
       refresh();
+    } else if (r.code === 'BAD_RESPONSE') {
+      // Kann trotzdem geklappt haben - nachsehen statt etwas zu behaupten.
+      setBusy('Antwort unklar – prüfe, ob es läuft…');
+      setTimeout(() => { busy = null; refresh(); }, 2500);
+      setTimeout(refresh, 9000);
     } else {
       busy = null;
       if (r.devices) { knownDevices = r.devices; renderDevices(); }
@@ -564,6 +590,9 @@ function doStart() {
       });
       render();
       scheduleNext();
+      // Spotify laesst die Wiedergabe manchmal verzoegert doch anlaufen -
+      // deshalb kurz danach nochmal den echten Stand holen.
+      setTimeout(refresh, 6000);
     }
   }).catch(err => {
     busy = null;
