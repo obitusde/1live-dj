@@ -810,7 +810,10 @@ function scheduleNext() {
   // Zurueckwechseln greift dann trotzdem sofort.
   if (document.hidden && !isWaiting()) return;
   if (isWaiting()) {
-    pollTimer = setTimeout(refresh, document.hidden ? WAIT_BG_POLL_MS : WAIT_POLL_MS);
+    pollTimer = setTimeout(() => {
+      if (Date.now() > waitingUntil) { refresh(); return; }  // Fenster abgelaufen -> normal weiter
+      doStart({ quiet: true });
+    }, document.hidden ? WAIT_BG_POLL_MS : WAIT_POLL_MS);
     return;
   }
 
@@ -894,12 +897,23 @@ function refresh(isRetry) {
 }
 
 // ── Aktionen ─────────────────────────────────────────────────
-function doStart() {
-  setBusy('Starte…');
+// quiet=true: der wiederholte Versuch aus dem Wartezustand heraus. Statt
+// erst den Status abzufragen (3,5 s) und DANN zu starten, wird direkt der
+// Start versucht - er bricht bei fehlendem Geraet ohnehin frueh ab. Spart im
+// Erfolgsfall einen kompletten Roundtrip.
+let startInFlight = false;
+
+function doStart(opts) {
+  const quiet = !!(opts && opts.quiet);
+  if (startInFlight) return;      // kein Doppelstart durch ueberlappende Versuche
+  startInFlight = true;
+  if (!quiet) setBusy('Starte…');
   api('startSession').then(r => {
+    startInFlight = false;
     if (r.ok) {
       if (r.devices) knownDevices = r.devices;
       busy = null;
+      waitingUntil = 0;
       st = Object.assign({}, st || {}, {
         ok: true, phase: 'playing', message: r.message, isPlaying: true, isPaused: false,
         sessionActive: true, current: r.current, queueAhead: r.queueAhead,
@@ -911,10 +925,17 @@ function doStart() {
       tick();
       refresh();
     } else if (r.code === 'BAD_RESPONSE') {
+      if (quiet) { scheduleNext(); return; }   // im Wartezustand einfach weiterprobieren
       // Kann trotzdem geklappt haben - nachsehen statt etwas zu behaupten.
       setBusy('Antwort unklar – prüfe, ob es läuft…');
       setTimeout(() => { busy = null; refresh(); }, 2500);
       setTimeout(refresh, 9000);
+    } else if (quiet) {
+      // Geraet weiterhin nicht da - Wartezustand unveraendert weiterlaufen
+      // lassen (nicht neu scharfschalten, sonst liefe das Fenster nie ab).
+      if (r.devices) knownDevices = r.devices;
+      render();
+      scheduleNext();
     } else {
       busy = null;
       if (r.devices) { knownDevices = r.devices; renderDevices(); }
@@ -935,6 +956,8 @@ function doStart() {
       setTimeout(refresh, 6000);
     }
   }).catch(err => {
+    startInFlight = false;
+    if (quiet) { scheduleNext(); return; }
     busy = null;
     st = { ok: false, message: 'Start fehlgeschlagen: ' + err.message, phase: 'error' };
     render();
