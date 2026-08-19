@@ -58,6 +58,13 @@ body {
 .np-title  { font-size: clamp(22px, 8vw, 40px); font-weight: 900; line-height: 1.12; }
 .np-artist { font-size: clamp(16px, 5.5vw, 26px); color: #999; font-weight: 700; line-height: 1.2; }
 .np-meta   { font-size: 12px; color: #666; margin-top: 2px; }
+/* Podcast-Schlagzeilen sind lang - auf zwei Zeilen begrenzen, damit sie den
+   Bereich nicht sprengen (vorher lief der Titel in den Fortschrittsbalken). */
+.np-meta.clamp2 {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: 13px; color: #888; line-height: 1.3;
+  max-width: 100%;
+}
 
 .progress-wrap { flex: 0 0 auto; padding: 0 20px 8px; }
 .progress-bar { height: 4px; border-radius: 2px; background: #222; overflow: hidden; }
@@ -312,7 +319,13 @@ let detailsOpen = false;
 let knownDevices = [];
 let progressBase = 0;       // progress_ms zum Zeitpunkt der Antwort
 let progressAt = 0;         // lokale Uhrzeit der Antwort
-let autoStartUntil = 0;     // nach "Spotify öffnen": bei Rueckkehr selbst starten
+// Wartezustand: nach einem am Geraet gescheiterten Start prueft die App
+// selbstaendig weiter und startet, sobald Spotify erreichbar ist. Sichtbar,
+// damit man weiss, dass Warten reicht und man nichts druecken muss.
+let waitingUntil = 0;
+const WAIT_WINDOW_MS = 5 * 60 * 1000;
+const WAIT_POLL_MS   = 5000;    // sichtbar
+const WAIT_BG_POLL_MS = 10000;  // im Hintergrund (Android drosselt das evtl.)
 
 // ── Nachrichten & Aktuelles ────────────────────────────────────
 // Spotify kann keine fremden MP3-URLs abspielen - diese Beitraege laufen im
@@ -335,6 +348,31 @@ let interjectionCancelReason = null;  // 'end_session' verhindert das automatisc
 let lastSeenSongUri = null;
 let triggeredForUri = null;           // verhindert doppeltes vorausschauendes Ausloesen fuer denselben Song
 
+// Versions-/Remix-Zusaetze aus Songtiteln entfernen - reine Anzeigesache.
+// Spotify haengt sie an ("Finder - Radio-Edit"), fuer die Anzeige interessiert
+// aber nur der eigentliche Titel. Die Suchlogik im Backend, die bewusst die
+// richtige Version findet, bleibt davon unberuehrt.
+const VERSION_WORDS = /\b(radio[ -]?edit|radio[ -]?mix|radio[ -]?version|radio[ -]?cut|single[ -]version|album[ -]version|remaster(ed)?|remix(ed)?|extended|club[ -]mix|vip[ -]mix|original[ -]mix|dub[ -]mix|long[ -]version|maxi[ -]version|video[ -]?version|short[ -]cut|edit|version|live|mono|stereo|deluxe|bonus[ -]track|instrumental|a ?ca?pella|acoustic|karaoke|cover|mix)\b/i;
+
+function cleanTitle(raw) {
+  const original = String(raw === null || raw === undefined ? '' : raw);
+  let t = original;
+
+  // Klammer-Zusaetze am Ende, ggf. mehrere: "Song (Radio Edit) (Remastered)"
+  let prev;
+  do {
+    prev = t;
+    t = t.replace(/\s*[([]([^()[\]]*)[)\]]\s*$/, (m, inner) => VERSION_WORDS.test(inner) ? '' : m);
+  } while (t !== prev);
+
+  // Zusaetze hinter einem Trennstrich, ebenfalls ggf. mehrere.
+  const parts = t.split(/\s+[-–—]\s+/);
+  while (parts.length > 1 && VERSION_WORDS.test(parts[parts.length - 1])) parts.pop();
+  t = parts.join(' - ').trim();
+
+  return t || original; // nie leer zurueckgeben
+}
+
 function fmt(ms) {
   if (!ms && ms !== 0) return '0:00';
   const s = Math.max(0, Math.round(ms / 1000));
@@ -342,6 +380,10 @@ function fmt(ms) {
 }
 
 let lastBadResponse = null;
+// Gleitender Mittelwert der Antwortzeit. Apps Script braucht 2-3 s pro
+// Aufruf - daraus errechnet sich der Vorlauf fuer den Pause-Befehl, damit
+// er genau am Songende ankommt statt drei Sekunden danach.
+let apiLatency = 2500;
 
 // Apps Script liefert gelegentlich eine HTML-Seite statt JSON - das passiert
 // in Googles HTTP-Schicht, nicht im Skript. Frueher landete das als rohes
@@ -350,8 +392,10 @@ let lastBadResponse = null;
 // durch Nachfragen aufloesen kann.
 function api(action, params) {
   const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
+  const t0 = Date.now();
   return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' })
     .then(r => r.text().then(text => {
+      apiLatency = Math.round(apiLatency * 0.7 + (Date.now() - t0) * 0.3);
       try {
         return JSON.parse(text);
       } catch (e) {
@@ -394,7 +438,7 @@ function paintIdle() {
 function renderCurrent(cur) {
   curSong = cur || null;
   if (cur) {
-    npTitle.textContent = cur.title || '—';
+    npTitle.textContent = cleanTitle(cur.title) || '—';
     npArtist.textContent = cur.artist || '';
     currentKey = cur.key || null;
 
@@ -496,8 +540,11 @@ function renderAlert() {
   const err = (st.lastError && Date.now() - st.lastError.at < 15 * 60 * 1000) ? st.lastError : null;
   if (!trouble && !(err && st.phase !== 'playing')) { alertBox.classList.add('hidden'); return; }
 
-  let html = '<div>' + escapeHtml(trouble ? st.message : err.message) + '</div>';
-  html += '<div class="act">';
+  // Im Wartezustand steht die Erklaerung schon gross im Hauptbereich - hier
+  // dann nur noch die Knoepfe, statt denselben Satz doppelt zu zeigen (spart
+  // auf kleinen Displays rund 40px).
+  let html = isWaiting() ? '' : ('<div>' + escapeHtml(trouble ? st.message : err.message) + '</div>');
+  html += '<div class="act"' + (isWaiting() ? ' style="margin-top:0"' : '') + '>';
   html += '<a id="lnkSpotify" href="spotify://">Spotify öffnen</a>';
   if (knownDevices.length) html += '<button id="btnPickDevice">Anderes Gerät</button>';
   html += '<button id="btnDismiss">Ausblenden</button>';
@@ -506,7 +553,7 @@ function renderAlert() {
   alertBox.classList.remove('hidden');
 
   const lnk = $('lnkSpotify');
-  if (lnk) lnk.addEventListener('click', () => { autoStartUntil = Date.now() + 120000; });
+  if (lnk) lnk.addEventListener('click', () => { waitingUntil = Date.now() + WAIT_WINDOW_MS; render(); });
   const pick = $('btnPickDevice');
   if (pick) pick.addEventListener('click', () => { devicesOpen = true; renderDevices(); });
   $('btnDismiss').addEventListener('click', () => { alertBox.classList.add('hidden'); });
@@ -532,7 +579,11 @@ function renderDetails() {
   }
   h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || st.targetDeviceName || '–') +
        '<br>Warteschlange: ' + (st.queueAhead || 0) +
-       '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') + '<br>';
+       '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') +
+       '<br>Antwortzeit: ' + (apiLatency / 1000).toFixed(1) + ' s' +
+       ' (Vorlauf ' + (Math.min(3500, Math.max(300, apiLatency - 1000)) / 1000).toFixed(1) + ' s)' +
+       (isWaiting() ? '<br>Warte auf Gerät: noch ' + fmt(waitingUntil - Date.now()) : '') +
+       (updateQueue.length ? '<br>Update-Folgen offen: ' + updateQueue.length : '') + '<br>';
   if (lastBadResponse) {
     h += '<br><b style="color:#ff8fa0">Unlesbare Serverantwort</b><br>' +
          new Date(lastBadResponse.at).toLocaleTimeString('de-DE') + ' · ' + escapeHtml(lastBadResponse.action) +
@@ -557,15 +608,15 @@ function escapeHtml(s) {
 // sonst wuerde "Aktualisiere..." die Anzeige ueberschreiben.
 function renderInterjection() {
   const ia = interjectionActive;
-  npTitle.textContent = ia.item.title;
-  // Nur Nachrichten/Aktuelles kommen vom Deutschlandfunk. Die Update-Sendungen
-  // tragen ihre Quelle schon im Namen ("HeuteMorgen (SRF)"), da waere ein
-  // vorangestelltes "Deutschlandfunk" schlicht falsch.
-  npArtist.textContent = (ia.kind === 'update')
-    ? (ia.item.show || 'Podcast')
-    : ('Deutschlandfunk' + (ia.item.show ? ' · ' + ia.item.show : ''));
-  npMeta.textContent = (ia.kind === 'news' ? '📰 Nachrichten' : '📻 Aktuelles') + ' – Musik geht gleich weiter';
+  // Gross nur der Sendungsname - die Folgen-Schlagzeile ist oft vier Zeilen
+  // lang und hat den Bereich vorher ueberlaufen lassen.
+  npTitle.textContent = ia.item.show || 'Podcast';
+  npArtist.textContent = ia.item.source || '';
+  // Die Schlagzeile klein und auf zwei Zeilen begrenzt - informativ, ohne
+  // das Layout zu sprengen.
+  npMeta.textContent = ia.item.title || '';
   npMeta.style.color = '';
+  npMeta.classList.add('clamp2');
   document.querySelector('.now-playing').style.opacity = '';
 
   // Bewertungs-Reihe gegen die Spultasten tauschen (gleiche Hoehe, kein Sprung).
@@ -594,12 +645,48 @@ function renderInterjection() {
   btnSkip.textContent = '⏭ Überspringen';
 }
 
+// Eigene Darstellung, solange auf das Geraet gewartet wird: man soll sehen,
+// dass Warten reicht und man nichts druecken muss.
+function renderWaiting() {
+  const restMs = Math.max(0, waitingUntil - Date.now());
+  const name = (st && st.targetDeviceName) || 'dem Gerät';
+
+  npTitle.textContent = 'Warte auf ' + name;
+  npArtist.textContent = 'Spotify dort öffnen – ich starte von selbst';
+  npMeta.textContent = 'noch ' + fmt(restMs);
+  npMeta.style.color = '';
+  npMeta.classList.remove('clamp2');
+  document.querySelector('.now-playing').style.opacity = '';
+  progressWrap.classList.add('hidden');
+
+  seekRow.classList.add('hidden');
+  feedbackRow.classList.remove('hidden');
+  btnLike.disabled = true; btnDislike.disabled = true; btnFavorite.disabled = true;
+
+  statusLine.className = 'statusline busy';
+  statusLine.innerHTML = '<span class="dot"></span>' +
+    escapeHtml('Warte auf ' + name + ' · starte automatisch');
+
+  btnPower.classList.remove('start', 'pause', 'resume', 'busy');
+  btnPower.classList.add('busy');
+  btnPower.textContent = '⏳ Warten abbrechen';
+  btnPower.disabled = false;
+  btnEnd.disabled = false;
+  btnSkip.disabled = true;
+  btnSkip.textContent = '⏭ Skip';
+
+  renderAlert();
+  renderDetails();
+}
+
 function render() {
   if (interjectionActive) { renderInterjection(); return; }
+  if (isWaiting() && !(st && st.ok && st.isPlaying)) { renderWaiting(); return; }
 
   // Zurueck zur Musik: Spultasten weg, Bewertung wieder da.
   seekRow.classList.add('hidden');
   feedbackRow.classList.remove('hidden');
+  npMeta.classList.remove('clamp2');
 
   // Statuszeile ist immer eindeutig - nie leer, nie mehrdeutig.
   let cls = '', text;
@@ -676,7 +763,9 @@ function isStale() {
 }
 
 function tick() {
-  if (interjectionActive) return; // Fortschritt kommt waehrend einer Einspielung vom Audio-Element selbst (siehe startInterjection)
+  if (interjectionActive) return;
+  // Im Wartezustand laeuft hier nur der Countdown weiter.
+  if (isWaiting() && !(st && st.ok && st.isPlaying)) { renderWaiting(); return; } // Fortschritt kommt waehrend einer Einspielung vom Audio-Element selbst (siehe startInterjection)
   if (isStale() || !st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null) {
     progressWrap.classList.add('hidden');
     return;
@@ -688,11 +777,14 @@ function tick() {
   tElapsed.textContent = fmt(pos);
   tTotal.textContent = fmt(dur);
 
-  // Erst ausloesen, wenn das Lied wirklich durch ist. Spotify hat dann meist
-  // schon ein, zwei Sekunden des naechsten Songs gespielt - der wird beim
-  // Fortsetzen per Seek auf 0 zurueckgesetzt, damit er komplett laeuft.
+  // Der Pause-Befehl laeuft ueber Apps Script und braucht 2-3 Sekunden bis er
+  // bei Spotify ankommt. Loesen wir exakt am Songende aus, spielt der naechste
+  // Song genau diese Zeit an, bevor es still wird. Deshalb um die gemessene
+  // Antwortzeit vorziehen (minus ~1 s, damit wir eher knapp NACH dem Ende
+  // landen als davor - dort greift dann das Zuruecksetzen auf 0).
   const left = dur - pos;
-  if (left <= 250 && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri && interjectionDue()) {
+  const lead = Math.min(3500, Math.max(300, apiLatency - 1000));
+  if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri && interjectionDue()) {
     triggeredForUri = st.current.uri;
     maybeTriggerInterjection();
   }
@@ -707,8 +799,21 @@ function interjectionDue() {
 }
 
 // ── Polling: gezielt zum Songende statt stur alle 20 s ───────
+function isWaiting() { return waitingUntil > Date.now(); }
+
 function scheduleNext() {
   clearTimeout(pollTimer);
+
+  // Im Hintergrund normalerweise gar nicht pollen (Akku, Kontingent) - im
+  // Wartezustand aber schon, damit die Musik auch dann losgeht, wenn man in
+  // der Spotify-App bleibt. Android drosselt das evtl., der Abruf beim
+  // Zurueckwechseln greift dann trotzdem sofort.
+  if (document.hidden && !isWaiting()) return;
+  if (isWaiting()) {
+    pollTimer = setTimeout(refresh, document.hidden ? WAIT_BG_POLL_MS : WAIT_POLL_MS);
+    return;
+  }
+
   let delay = IDLE_POLL_MS;
 
   if (st && st.ok) {
@@ -765,10 +870,17 @@ function refresh(isRetry) {
       }
       lastSeenSongUri = newUri || lastSeenSongUri;
 
-      // Nach "Spotify öffnen": sobald das Gerät wieder da ist, selbst starten.
-      if (autoStartUntil > Date.now() && data.targetOnline && data.phase !== 'playing') {
-        autoStartUntil = 0;
+      // Wartezustand: sobald das Gerät antwortet, von selbst starten.
+      if (waitingUntil > Date.now() && data.targetOnline && data.phase !== 'playing') {
+        waitingUntil = 0;
         doStart();
+        return;
+      }
+      if (waitingUntil && Date.now() > waitingUntil) {
+        // Nicht stumm aufgeben - sagen, dass jetzt Handarbeit noetig ist.
+        waitingUntil = 0;
+        setSoftError('Kein Gerät gefunden – Spotify öffnen und Start drücken', 'device_gone');
+        scheduleNext();
         return;
       }
     }
@@ -810,6 +922,12 @@ function doStart() {
         ok: true, phase: r.code === 'DEVICE_GONE' || r.code === 'NO_DEVICE' ? 'device_gone' : 'error',
         message: r.message || 'Start fehlgeschlagen'
       });
+      // Scheiterte es am Geraet, ist die Absicht eindeutig: ab jetzt selbst
+      // weiterprueferen und starten, sobald Spotify antwortet. Frueher musste
+      // man dafuer erst den "Spotify öffnen"-Knopf benutzen.
+      if (['DEVICE_GONE', 'NO_DEVICE', 'PLAY_FAILED'].indexOf(r.code) !== -1) {
+        waitingUntil = Date.now() + WAIT_WINDOW_MS;
+      }
       render();
       scheduleNext();
       // Spotify laesst die Wiedergabe manchmal verzoegert doch anlaufen -
@@ -995,6 +1113,7 @@ btnPower.addEventListener('click', () => {
     render();
     return;
   }
+  if (isWaiting()) { waitingUntil = 0; render(); scheduleNext(); return; }
   const phase = st && st.ok ? st.phase : 'idle';
   if (phase === 'playing') {
     setBusy('Pausiere…');
@@ -1018,6 +1137,7 @@ btnEnd.addEventListener('click', () => {
   // Update-Modus beenden, sonst liefe er nach dem naechsten Start weiter.
   if (interjectionActive) cancelInterjection('end_session');
   updateQueue = [];
+  waitingUntil = 0;
   renderUpdateButton();
   setBusy('Beende…');
   api('stopSession').then(() => { busy = null; refresh(); })
@@ -1125,7 +1245,8 @@ btnReload.addEventListener('click', () => location.reload());
 // Bei versteckter Seite gar nicht pollen; beim Zurueckkommen sofort einmal.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    clearTimeout(pollTimer); clearInterval(tickTimer); tickTimer = null;
+    clearInterval(tickTimer); tickTimer = null;
+    scheduleNext(); // pollt nur weiter, wenn wir auf ein Geraet warten
   } else {
     if (!tickTimer) tickTimer = setInterval(tick, 500);
     // Sofort sichtbar machen, dass der angezeigte Stand von vorhin ist -
