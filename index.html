@@ -342,6 +342,10 @@ let songsSinceInterjection = 0;
 let interjectionThreshold = 2;
 let interjectionActive = null;        // { item, kind, paused } waehrend eine Einspielung laeuft
 let updateQueue = [];                 // "Update"-Modus: die vier Folgen der Reihe nach
+// Senderwechsel wirkt erst zum naechsten Songende: dann wird die komplette
+// Wiedergabeliste bei Spotify durch Songs des neuen Senders ersetzt (der
+// Start-Aufruf setzt den Kontext neu, siehe topUpQueue_/handleStartSession).
+let pendingStationSwitch = false;
 let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
 let interjectionResolve = null;       // laesst Skip/Beenden die laufende Einspielung sofort abbrechen
 let interjectionCancelReason = null;  // 'end_session' verhindert das automatische Fortsetzen danach
@@ -390,10 +394,20 @@ let apiLatency = 2500;
 // "Unexpected token '<'" beim Nutzer, obwohl die Aktion serverseitig
 // erfolgreich war. Jetzt wird daraus ein sauberer Zustand, den der Aufrufer
 // durch Nachfragen aufloesen kann.
+const API_TIMEOUT_MS = 12000;
+
 function api(action, params) {
   const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
   const t0 = Date.now();
-  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' })
+  // Ohne Zeitlimit konnte eine haengende Anfrage (typisch beim Wechsel
+  // WLAN<->Mobilfunk) die komplette Abfrageschleife lahmlegen: der naechste
+  // Abruf wird erst im .then() geplant, also nie. Die Anzeige blieb dann
+  // minutenlang stehen. Jetzt bricht sie ab und der Aufrufer plant weiter.
+  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const killer = ctrl ? setTimeout(() => ctrl.abort(), API_TIMEOUT_MS) : null;
+
+  return fetch(WEBAPP_URL + '?' + qs.toString(),
+               ctrl ? { cache: 'no-store', signal: ctrl.signal } : { cache: 'no-store' })
     .then(r => r.text().then(text => {
       apiLatency = Math.round(apiLatency * 0.7 + (Date.now() - t0) * 0.3);
       try {
@@ -403,7 +417,17 @@ function api(action, params) {
         return { ok: false, code: 'BAD_RESPONSE',
                  message: 'Server hat keine lesbare Antwort geschickt (HTTP ' + r.status + ')' };
       }
-    }));
+    }))
+    // Nie ablehnen, immer ein Ergebnis liefern - so laeuft der .then()-Pfad
+    // der Aufrufer (und damit scheduleNext) auch bei Netzproblemen weiter.
+    .catch(err => ({
+      ok: false,
+      code: (err && err.name === 'AbortError') ? 'TIMEOUT' : 'NETWORK',
+      message: (err && err.name === 'AbortError')
+        ? 'Server antwortet nicht (Zeitlimit)'
+        : 'Keine Verbindung'
+    }))
+    .then(res => { if (killer) clearTimeout(killer); return res; });
 }
 
 // ── Anzeige ──────────────────────────────────────────────────
@@ -494,7 +518,13 @@ function renderStations(list) {
     b.textContent = s.label;
     b.addEventListener('click', () => {
       const next = s.active ? activeIds.filter(id => id !== s.id) : activeIds.concat(s.id);
-      api('setStations', { stations: next.join(',') }).then(r => { if (r.ok) { stationSig = ''; renderStations(r.stations); } });
+      api('setStations', { stations: next.join(',') }).then(r => {
+        if (!r.ok) return;
+        stationSig = ''; renderStations(r.stations);
+        // Laeuft gerade Musik, wird die Liste zum Songende getauscht - sonst
+        // erst beim naechsten Start, da ist ohnehin nichts zu ersetzen.
+        if (st && st.ok && st.isPlaying) { pendingStationSwitch = true; render(); }
+      });
     });
     stationRow.appendChild(b);
   });
@@ -702,6 +732,13 @@ function render() {
     else if (st.phase === 'paused') cls = 'paused';
     else if (st.phase === 'device_gone' || st.phase === 'error') cls = 'trouble';
   }
+  // Vorgemerktes sichtbar machen - sonst tippt man und nichts scheint zu passieren.
+  if (!busy && st && st.ok) {
+    const wartet = [];
+    if (pendingStationSwitch) wartet.push('Sender wechselt nach dem Lied');
+    if (pendingNews) wartet.push('Nachrichten nach dem Lied');
+    if (wartet.length) text = text + ' · ' + wartet.join(' · ');
+  }
   // Lieber "ich schaue gerade nach" als eine Angabe, die nicht mehr stimmt.
   if (!busy && isStale()) { cls = 'busy'; text = 'Aktualisiere…'; }
 
@@ -784,9 +821,17 @@ function tick() {
   // landen als davor - dort greift dann das Zuruecksetzen auf 0).
   const left = dur - pos;
   const lead = Math.min(3500, Math.max(300, apiLatency - 1000));
-  if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri && interjectionDue()) {
-    triggeredForUri = st.current.uri;
-    maybeTriggerInterjection();
+  if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri) {
+    if (pendingStationSwitch) {
+      // Vorrang vor Einspielungen: erst die Liste tauschen, Beitraege kommen
+      // dann ab dem naechsten Songende wieder normal.
+      triggeredForUri = st.current.uri;
+      pendingStationSwitch = false;
+      doStart({ busyText: 'Wechsle Sender…' });
+    } else if (interjectionDue()) {
+      triggeredForUri = st.current.uri;
+      maybeTriggerInterjection();
+    }
   }
 }
 
@@ -838,7 +883,10 @@ function setSoftError(message, phase) {
   render();
 }
 
+let lastPollAt = 0;
+
 function refresh(isRetry) {
+  lastPollAt = Date.now();
   return api('status').then(data => {
     if (!data.ok && data.code === 'BAD_RESPONSE' && !isRetry) {
       // Googles Frontend liefert sporadisch eine Fehlerseite statt unserer
@@ -869,7 +917,11 @@ function refresh(isRetry) {
       if (lastSeenSongUri && newUri && newUri !== lastSeenSongUri && data.phase === 'playing' && !interjectionActive) {
         songsSinceInterjection++;
         triggeredForUri = null;
-        if (interjectionDue()) maybeTriggerInterjection();
+        // Reaktives Netz nur, wenn der neue Song gerade erst angefangen hat.
+        // Sonst schnitte es mitten hinein - genau das sollte nicht passieren.
+        // Ist der Song schon laenger unterwegs, wird nur gezaehlt und aufs
+        // naechste Songende gewartet (tick() uebernimmt das).
+        if ((data.progressMs || 0) < 10000 && interjectionDue()) maybeTriggerInterjection();
       }
       lastSeenSongUri = newUri || lastSeenSongUri;
 
@@ -907,7 +959,7 @@ function doStart(opts) {
   const quiet = !!(opts && opts.quiet);
   if (startInFlight) return;      // kein Doppelstart durch ueberlappende Versuche
   startInFlight = true;
-  if (!quiet) setBusy('Starte…');
+  if (!quiet) setBusy((opts && opts.busyText) || 'Starte…');
   api('startSession').then(r => {
     startInFlight = false;
     if (r.ok) {
@@ -972,7 +1024,7 @@ function prefetchNextAktuelles() {
 
 function rollInterjectionThreshold() {
   songsSinceInterjection = 0;
-  interjectionThreshold = Math.random() < 0.5 ? 2 : 3; // "alle 2-3 Lieder"
+  interjectionThreshold = 1; // Beitrag und Lied wechseln sich ab
 }
 
 // Nur wenn wirklich eine Session laeuft ausloesen - sonst wuerde playerResume
@@ -1111,7 +1163,12 @@ btnNews.addEventListener('click', () => {
   api('latestNews').then(r => {
     if (r.ok && r.item) {
       pendingNews = r.item;
-      maybeTriggerInterjection(); // falls die Musik gerade pausiert ist, sofort - sonst wartet es auf die naechste Luecke
+      // Nur sofort loslegen, wenn gerade wirklich nichts spielt. Laeuft ein
+      // Song, wird er ausgespielt - das Ausloesen uebernimmt dann die
+      // Songende-Erkennung in tick(). Vorher brach der Knopf den laufenden
+      // Song mitten drin ab.
+      if (!(st && st.ok && st.isPlaying)) maybeTriggerInterjection();
+      render();
     } else {
       btnNews.classList.remove('active');
     }
@@ -1161,6 +1218,9 @@ btnEnd.addEventListener('click', () => {
   if (interjectionActive) cancelInterjection('end_session');
   updateQueue = [];
   waitingUntil = 0;
+  pendingStationSwitch = false;
+  pendingNews = null;
+  btnNews.classList.remove('active');
   renderUpdateButton();
   setBusy('Beende…');
   api('stopSession').then(() => { busy = null; refresh(); })
@@ -1279,6 +1339,15 @@ document.addEventListener('visibilitychange', () => {
     refresh();
   }
 });
+
+// Wachhund: Guertel und Hosentraeger gegen eine abgerissene Abfrageschleife.
+// Selbst wenn irgendein Pfad einmal kein scheduleNext() aufruft, kommt die
+// App hier von allein zurueck, statt bis zum naechsten Tippen stehenzubleiben.
+setInterval(() => {
+  if (interjectionActive) return;
+  if (document.hidden && !isWaiting()) return;
+  if (Date.now() - lastPollAt > 60000) refresh();
+}, 15000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
