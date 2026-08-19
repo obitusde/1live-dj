@@ -310,8 +310,16 @@ function renderCurrent(cur) {
   btnDislike.disabled = !currentKey;
 }
 
+let stationSig = '';
+
 function renderStations(list) {
   if (!list) return;
+  // Nur neu zeichnen, wenn sich wirklich etwas geaendert hat - sonst baut
+  // jeder Status-Poll die Kacheln neu auf und kann einen Tap verschlucken.
+  const sig = list.map(s => s.id + (s.active ? '1' : '0')).join(',');
+  if (sig === stationSig) return;
+  stationSig = sig;
+
   stationRow.innerHTML = '';
   const activeIds = list.filter(s => s.active).map(s => s.id);
   list.forEach(s => {
@@ -320,16 +328,22 @@ function renderStations(list) {
     b.textContent = s.label;
     b.addEventListener('click', () => {
       const next = s.active ? activeIds.filter(id => id !== s.id) : activeIds.concat(s.id);
-      api('setStations', { stations: next.join(',') }).then(r => { if (r.ok) renderStations(r.stations); });
+      api('setStations', { stations: next.join(',') }).then(r => { if (r.ok) { stationSig = ''; renderStations(r.stations); } });
     });
     stationRow.appendChild(b);
   });
 }
 
+let deviceSig = '';
+
 function renderDevices() {
   deviceRow.classList.toggle('hidden', !devicesOpen);
   btnToggleDevices.textContent = devicesOpen ? 'schließen ▴' : 'ändern ▾';
   if (!devicesOpen) return;
+
+  const sig = knownDevices.map(d => d.id).join(',') + '|' + (st ? st.targetDeviceId : '');
+  if (sig === deviceSig && deviceRow.childElementCount) return;
+  deviceSig = sig;
 
   deviceRow.innerHTML = '';
   if (!knownDevices.length) {
@@ -354,7 +368,10 @@ function renderAlert() {
   if (busy || !st) { alertBox.classList.add('hidden'); return; }
 
   const trouble = ['device_gone', 'error'].indexOf(st.phase) !== -1;
-  const err = st.lastError;
+  // Alte Hintergrundfehler nicht ewig anzeigen - ein Fehler von vor zwei
+  // Stunden ist kein aktueller Zustand, sondern nur Rauschen. Steht die App
+  // gerade wirklich im Problemzustand, zeigen wir ihn unabhaengig vom Alter.
+  const err = (st.lastError && Date.now() - st.lastError.at < 15 * 60 * 1000) ? st.lastError : null;
   if (!trouble && !(err && st.phase !== 'playing')) { alertBox.classList.add('hidden'); return; }
 
   let html = '<div>' + escapeHtml(trouble ? st.message : err.message) + '</div>';
