@@ -68,7 +68,17 @@ body {
 }
 .progress-wrap.hidden { visibility: hidden; }
 
-.feedback-row { flex: 0 0 auto; display: flex; gap: 12px; padding: 0 16px 10px; }
+.feedback-row, .seek-row { flex: 0 0 auto; display: flex; gap: 12px; padding: 0 16px 10px; }
+.btn-seek {
+  flex: 1; border: 2px solid #2a4a6a; background: #0b1622; color: #9fd0ff; cursor: pointer;
+  border-radius: 16px; font-family: inherit; font-weight: 800; padding: 13px 0;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
+  transition: transform .1s, filter .1s;
+}
+.btn-seek .ico { font-size: 24px; line-height: 1; }
+.btn-seek .lbl { font-size: 13px; }
+.btn-seek:active { transform: scale(0.92); filter: brightness(1.35); }
 .btn-feedback {
   flex: 1; border: none; cursor: pointer; border-radius: 16px; font-family: inherit;
   font-weight: 800; padding: 13px 0; display: flex; flex-direction: column; align-items: center;
@@ -95,12 +105,13 @@ body {
 .btn-skip:active { transform: scale(0.97); border-color: #666; }
 .btn-skip:disabled { opacity: 0.3; cursor: default; }
 
-.extras-row { display: flex; gap: 10px; }
+.extras-row { display: flex; gap: 8px; }
 .btn-extra {
-  flex: 1; border: 1.5px solid #444; cursor: pointer; border-radius: 13px; font-family: inherit;
-  background: rgba(255,255,255,0.05); color: #ccc; font-size: 14px; font-weight: 800;
-  padding: 11px 4px; -webkit-tap-highlight-color: transparent; user-select: none;
+  flex: 1; min-width: 0; border: 1.5px solid #444; cursor: pointer; border-radius: 13px;
+  font-family: inherit; background: rgba(255,255,255,0.05); color: #ccc; font-size: 12.5px;
+  font-weight: 800; padding: 11px 2px; -webkit-tap-highlight-color: transparent; user-select: none;
   touch-action: manipulation; transition: transform .1s, filter .1s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .btn-extra:active { transform: scale(0.97); }
 .btn-extra.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.22); }
@@ -210,7 +221,14 @@ body {
 
 <div class="alert hidden" id="alertBox"></div>
 
-<div class="feedback-row">
+<!-- Ersetzt waehrend einer Einspielung die Bewertungs-Reihe: gleiche Hoehe,
+     dadurch kein Springen des Layouts beim Umschalten. -->
+<div class="seek-row hidden" id="seekRow">
+  <button class="btn-seek" id="btnBack5"><span class="ico">⏪</span><span class="lbl">5 Sek</span></button>
+  <button class="btn-seek" id="btnFwd10"><span class="ico">⏩</span><span class="lbl">10 Sek</span></button>
+</div>
+
+<div class="feedback-row" id="feedbackRow">
   <button class="btn-feedback btn-dislike" id="btnDislike" disabled>
     <span class="ico">👎</span><span class="lbl">nicht mehr</span>
   </button>
@@ -226,8 +244,9 @@ body {
   <button class="btn-skip" id="btnSkip" disabled>⏭ Skip</button>
 
   <div class="extras-row">
-    <button class="btn-extra" id="btnNews">📰 Nachrichten</button>
+    <button class="btn-extra" id="btnNews">📰 News</button>
     <button class="btn-extra" id="btnAktuelles">📻 Aktuelles</button>
+    <button class="btn-extra" id="btnUpdate">🗞 Update</button>
   </div>
 
   <div class="ctl-line">
@@ -278,6 +297,8 @@ const statusLine = $('statusLine'), detailsBox = $('detailsBox'), alertBox = $('
 const progressWrap = $('progressWrap'), progressFill = $('progressFill');
 const tElapsed = $('tElapsed'), tTotal = $('tTotal');
 const btnNews = $('btnNews'), btnAktuelles = $('btnAktuelles'), newsAudio = $('newsAudio');
+const btnUpdate = $('btnUpdate'), seekRow = $('seekRow'), feedbackRow = $('feedbackRow');
+const btnBack5 = $('btnBack5'), btnFwd10 = $('btnFwd10');
 
 const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3' };
 
@@ -306,7 +327,9 @@ let aktuellesOn = localStorage.getItem('aktuellesOn') === '1';
 let aktuellesNextItem = null;         // vorab geholt, damit beim Ausloesen keine Wartezeit entsteht
 let songsSinceInterjection = 0;
 let interjectionThreshold = 2;
-let interjectionActive = null;        // { item, kind } waehrend eine Einspielung laeuft
+let interjectionActive = null;        // { item, kind, paused } waehrend eine Einspielung laeuft
+let updateQueue = [];                 // "Update"-Modus: die vier Folgen der Reihe nach
+let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
 let interjectionResolve = null;       // laesst Skip/Beenden die laufende Einspielung sofort abbrechen
 let interjectionCancelReason = null;  // 'end_session' verhindert das automatische Fortsetzen danach
 let lastSeenSongUri = null;
@@ -535,17 +558,37 @@ function escapeHtml(s) {
 function renderInterjection() {
   const ia = interjectionActive;
   npTitle.textContent = ia.item.title;
-  npArtist.textContent = 'Deutschlandfunk' + (ia.item.show ? ' · ' + ia.item.show : '');
+  // Nur Nachrichten/Aktuelles kommen vom Deutschlandfunk. Die Update-Sendungen
+  // tragen ihre Quelle schon im Namen ("HeuteMorgen (SRF)"), da waere ein
+  // vorangestelltes "Deutschlandfunk" schlicht falsch.
+  npArtist.textContent = (ia.kind === 'update')
+    ? (ia.item.show || 'Podcast')
+    : ('Deutschlandfunk' + (ia.item.show ? ' · ' + ia.item.show : ''));
   npMeta.textContent = (ia.kind === 'news' ? '📰 Nachrichten' : '📻 Aktuelles') + ' – Musik geht gleich weiter';
   npMeta.style.color = '';
   document.querySelector('.now-playing').style.opacity = '';
 
-  btnFavorite.disabled = true; btnLike.disabled = true; btnDislike.disabled = true;
+  // Bewertungs-Reihe gegen die Spultasten tauschen (gleiche Hoehe, kein Sprung).
+  feedbackRow.classList.add('hidden');
+  seekRow.classList.remove('hidden');
 
-  statusLine.className = 'statusline playing';
-  statusLine.innerHTML = '<span class="dot"></span>' + escapeHtml((ia.kind === 'news' ? 'Nachrichten' : 'Aktuelles') + ' läuft…');
+  const label = ia.kind === 'news' ? 'Nachrichten' : (ia.kind === 'update' ? 'Update' : 'Aktuelles');
+  statusLine.className = 'statusline ' + (ia.paused ? 'paused' : 'playing');
+  statusLine.innerHTML = '<span class="dot"></span>' +
+    escapeHtml(ia.paused ? label + ' pausiert' : label + ' läuft…');
 
-  btnPower.disabled = true;
+  // Pause/Fortsetzen wirkt waehrend einer Einspielung auf den Podcast, nicht
+  // auf Spotify - Spotify ist ja ohnehin schon angehalten.
+  btnPower.classList.remove('start', 'pause', 'resume', 'busy');
+  btnPower.disabled = false;
+  if (ia.paused) {
+    btnPower.textContent = '▶ Fortsetzen';
+    btnPower.classList.add('resume');
+  } else {
+    btnPower.textContent = '⏸ Pause';
+    btnPower.classList.add('pause');
+  }
+
   btnEnd.disabled = false;
   btnSkip.disabled = false;
   btnSkip.textContent = '⏭ Überspringen';
@@ -553,6 +596,10 @@ function renderInterjection() {
 
 function render() {
   if (interjectionActive) { renderInterjection(); return; }
+
+  // Zurueck zur Musik: Spultasten weg, Bewertung wieder da.
+  seekRow.classList.add('hidden');
+  feedbackRow.classList.remove('hidden');
 
   // Statuszeile ist immer eindeutig - nie leer, nie mehrdeutig.
   let cls = '', text;
@@ -641,18 +688,22 @@ function tick() {
   tElapsed.textContent = fmt(pos);
   tTotal.textContent = fmt(dur);
 
-  // Vorausschauend kurz vor Songende ausloesen (~4s) statt reaktiv erst,
-  // nachdem der Nachfolger schon angefangen hat - schneidet dann nur den
-  // laufenden Song selbst minimal an, nicht seinen Nachfolger.
+  // Erst ausloesen, wenn das Lied wirklich durch ist. Spotify hat dann meist
+  // schon ein, zwei Sekunden des naechsten Songs gespielt - der wird beim
+  // Fortsetzen per Seek auf 0 zurueckgesetzt, damit er komplett laeuft.
   const left = dur - pos;
-  if (left <= 4000 && left > -4000 && st.current.uri && triggeredForUri !== st.current.uri && interjectionDue()) {
+  if (left <= 250 && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri && interjectionDue()) {
     triggeredForUri = st.current.uri;
     maybeTriggerInterjection();
   }
 }
 
 function interjectionDue() {
-  return !!pendingNews || (aktuellesOn && songsSinceInterjection >= interjectionThreshold && !!aktuellesNextItem);
+  if (pendingNews) return true;
+  // Update-Modus hat Vorrang vor Aktuelles und braucht genau ein komplettes
+  // Lied Abstand.
+  if (updateQueue.length && songsSinceInterjection >= 1) return true;
+  return aktuellesOn && songsSinceInterjection >= interjectionThreshold && !!aktuellesNextItem;
 }
 
 // ── Polling: gezielt zum Songende statt stur alle 20 s ───────
@@ -797,6 +848,13 @@ function maybeTriggerInterjection() {
     startInterjection(item, 'news');
     return;
   }
+  if (updateQueue.length && songsSinceInterjection >= 1) {
+    const item = updateQueue.shift();
+    songsSinceInterjection = 0;
+    renderUpdateButton();
+    startInterjection(item, 'update');
+    return;
+  }
   if (aktuellesOn && songsSinceInterjection >= interjectionThreshold && aktuellesNextItem) {
     const item = aktuellesNextItem;
     aktuellesNextItem = null;
@@ -806,24 +864,43 @@ function maybeTriggerInterjection() {
   }
 }
 
+function renderUpdateButton() {
+  const n = updateQueue.length;
+  btnUpdate.classList.toggle('active', n > 0);
+  btnUpdate.textContent = n > 0 ? '🗞 Update ' + n : '🗞 Update';
+}
+
 function cancelInterjection(reason) {
   interjectionCancelReason = reason || 'user_skip';
   if (interjectionResolve) interjectionResolve();
 }
 
 async function startInterjection(item, kind) {
-  interjectionActive = { item: item, kind: kind };
+  interjectionActive = { item: item, kind: kind, paused: false };
+  let watchdog = null;
   render();
 
   // playerPause/-Resume ruehren bewusst NICHT an Session/Pause-Zustand
   // (siehe News.js) - eine Nachrichten-Unterbrechung soll nicht wie ein
   // Nutzer-Pause aussehen oder den Nachschub-Trigger stoppen.
-  try { await api('playerPause'); } catch (e) { /* egal, weiter mit der Einspielung */ }
+  resumeSeekMs = null;
+  try {
+    const pauseRes = await api('playerPause');
+    // Da wir erst nach Songende ausloesen, laeuft der naechste Song meist
+    // schon ein, zwei Sekunden. Den setzen wir beim Fortsetzen auf 0 zurueck,
+    // damit er wirklich komplett laeuft.
+    if (pauseRes && pauseRes.ok && typeof pauseRes.progressMs === 'number' && pauseRes.progressMs < 20000) {
+      resumeSeekMs = 0;
+    }
+  } catch (e) { /* egal, weiter mit der Einspielung */ }
 
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: item.title, artist: 'Deutschlandfunk' + (item.show ? ' · ' + item.show : ''), album: '1LIVE DJ'
+        title: item.title,
+        artist: kind === 'update' ? (item.show || 'Podcast')
+                                  : ('Deutschlandfunk' + (item.show ? ' · ' + item.show : '')),
+        album: '1LIVE DJ'
       });
     } catch (e) { /* nicht kritisch */ }
   }
@@ -847,10 +924,19 @@ async function startInterjection(item, kind) {
     newsAudio.onended = done;
     newsAudio.onerror = done;
     newsAudio.play().catch(done);
-    // Sicherheitsnetz: falls aus irgendeinem Grund nie ein Ended-Event kommt
-    // (z.B. Autoplay durch den Browser blockiert), spaetestens hier weiter.
-    setTimeout(done, (item.durationMs || 300000) + 20000);
+
+    // Wachhund statt starrem Timeout: ein fester Timer wuerde eine laengere
+    // Nutzer-Pause faelschlich als Abbruch werten. Hier zaehlt nur, ob die
+    // Wiedergabe haengt, WAEHREND sie eigentlich laufen sollte.
+    let lastPos = -1, stalledFor = 0;
+    watchdog = setInterval(() => {
+      if (interjectionActive && interjectionActive.paused) { stalledFor = 0; return; }
+      if (newsAudio.currentTime !== lastPos) { lastPos = newsAudio.currentTime; stalledFor = 0; return; }
+      stalledFor += 5;
+      if (stalledFor >= 40) done(); // 40 s ohne Fortschritt trotz "spielt" -> aufgeben
+    }, 5000);
   });
+  clearInterval(watchdog);
 
   const cancelReason = interjectionCancelReason;
   interjectionCancelReason = null;
@@ -862,10 +948,14 @@ async function startInterjection(item, kind) {
   newsAudio.load();
   progressWrap.classList.add('hidden');
   interjectionActive = null;
+  seekRow.classList.add('hidden');
+  feedbackRow.classList.remove('hidden');
 
   if (cancelReason !== 'end_session') {
-    try { await api('playerResume'); } catch (e) { /* naechster Poll zeigt den echten Stand */ }
+    const params = (resumeSeekMs !== null) ? { seekMs: resumeSeekMs } : undefined;
+    try { await api('playerResume', params); } catch (e) { /* naechster Poll zeigt den echten Stand */ }
   }
+  resumeSeekMs = null;
   refresh();
 }
 
@@ -898,6 +988,13 @@ btnAktuelles.addEventListener('click', () => {
 });
 
 btnPower.addEventListener('click', () => {
+  // Waehrend einer Einspielung steuert der Knopf den Podcast, nicht Spotify.
+  if (interjectionActive) {
+    if (newsAudio.paused) { newsAudio.play().catch(() => {}); interjectionActive.paused = false; }
+    else                  { newsAudio.pause();                 interjectionActive.paused = true;  }
+    render();
+    return;
+  }
   const phase = st && st.ok ? st.phase : 'idle';
   if (phase === 'playing') {
     setBusy('Pausiere…');
@@ -917,8 +1014,11 @@ btnPower.addEventListener('click', () => {
 
 btnEnd.addEventListener('click', () => {
   // Notausgang: eine laufende Einspielung sofort abbrechen, OHNE sie danach
-  // fortzusetzen - stopSession() pausiert ohnehin gleich alles.
+  // fortzusetzen - stopSession() pausiert ohnehin gleich alles. Auch den
+  // Update-Modus beenden, sonst liefe er nach dem naechsten Start weiter.
   if (interjectionActive) cancelInterjection('end_session');
+  updateQueue = [];
+  renderUpdateButton();
   setBusy('Beende…');
   api('stopSession').then(() => { busy = null; refresh(); })
     .catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
@@ -978,6 +1078,47 @@ btnToggleDevices.addEventListener('click', () => {
   }
 });
 
+function seekBy(seconds) {
+  if (!interjectionActive) return;
+  const dur = newsAudio.duration || (interjectionActive.item.durationMs || 0) / 1000;
+  const target = newsAudio.currentTime + seconds;
+  newsAudio.currentTime = Math.max(0, dur ? Math.min(dur - 0.5, target) : Math.max(0, target));
+}
+btnBack5.addEventListener('click', () => seekBy(-5));
+btnFwd10.addEventListener('click', () => seekBy(10));
+
+btnUpdate.addEventListener('click', () => {
+  if (updateQueue.length) {
+    // Erneutes Tippen bricht den Modus ab (eine gerade laufende Folge nicht).
+    updateQueue = [];
+    renderUpdateButton();
+    return;
+  }
+  btnUpdate.textContent = '🗞 lädt…';
+  btnUpdate.disabled = true;
+  api('updateEpisodes').then(r => {
+    btnUpdate.disabled = false;
+    if (r.ok && r.episodes && r.episodes.length) {
+      updateQueue = r.episodes;
+      // Update hat Vorrang - Aktuelles waehrenddessen ausschalten, damit sich
+      // die beiden Modi nicht gegenseitig die Luecken wegnehmen.
+      if (aktuellesOn) {
+        aktuellesOn = false;
+        localStorage.setItem('aktuellesOn', '0');
+        btnAktuelles.classList.remove('active');
+      }
+      songsSinceInterjection = 1; // die erste Folge kommt nach dem laufenden Lied
+      renderUpdateButton();
+      if (r.failed && r.failed.length) {
+        setSoftError('Update: ' + r.failed.join(', ') + ' gerade nicht erreichbar', st ? st.phase : 'idle');
+      }
+    } else {
+      renderUpdateButton();
+      setSoftError('Update-Folgen konnten nicht geladen werden', 'error');
+    }
+  }).catch(() => { btnUpdate.disabled = false; renderUpdateButton(); });
+});
+
 statusLine.addEventListener('click', () => { detailsOpen = !detailsOpen; renderDetails(); });
 btnReload.addEventListener('click', () => location.reload());
 
@@ -999,6 +1140,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 
 btnAktuelles.classList.toggle('active', aktuellesOn);
 if (aktuellesOn) { rollInterjectionThreshold(); prefetchNextAktuelles(); }
+renderUpdateButton();
 
 tickTimer = setInterval(tick, 500);
 render();
