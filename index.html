@@ -2,7 +2,9 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<!-- viewport-fit=cover ist Pflicht, sonst liefert env(safe-area-inset-*)
+     immer 0 und der untere Rand wird in der PWA abgeschnitten. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>1LIVE DJ</title>
 <link rel="manifest" href="manifest.json">
@@ -13,101 +15,167 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+html { width: 100%; background: #000; overflow-x: hidden; }
+/* min-height statt fixer height: normalerweise fuellt die App genau einen
+   Bildschirm, aber wenn ausnahmsweise alles gleichzeitig sichtbar ist
+   (Fortschritt + Fehlermeldung + offene Geraeteliste auf einem kleinen
+   Display), darf die Seite scrollen. Vorher war das overflow:hidden - der
+   Start-Knopf wurde dann einfach abgeschnitten. */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif;
-  color: #fff; height: 100dvh; display: flex; flex-direction: column;
-  padding: env(safe-area-inset-top,0) env(safe-area-inset-right,0)
-           env(safe-area-inset-bottom,0) env(safe-area-inset-left,0);
+  color: #fff; width: 100%; min-height: 100dvh; display: flex; flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0);
+  padding-right: env(safe-area-inset-right, 0);
+  padding-left: env(safe-area-inset-left, 0);
+  /* Untere Gestensteuerung/Notch: mindestens 8px, sonst klebt der
+     Beenden-Knopf am Bildschirmrand. */
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
 }
+
 .topbar {
-  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; border-bottom: 2px solid #222;
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 2px solid #222;
 }
-.title { font-size: 20px; font-weight: 900; letter-spacing: 0.5px; }
+.title { font-size: 19px; font-weight: 900; letter-spacing: 0.5px; }
 .title .dj { color: #e8001c; }
 .btn-icon {
   background: rgba(255,255,255,0.06); border: 1.5px solid #444; border-radius: 8px; color: #ccc;
-  font-size: 16px; cursor: pointer; width: 36px; height: 36px;
+  font-size: 16px; cursor: pointer; width: 34px; height: 34px;
   display: flex; align-items: center; justify-content: center;
   -webkit-tap-highlight-color: transparent;
 }
 .btn-icon:active { color: #fff; border-color: #e8001c; background: rgba(232,0,28,0.18); }
-.btn-icon:disabled { opacity: 0.35; cursor: default; }
 
+/* min-height:0 ist der eigentliche Fix: ohne das weigert sich ein flex:1
+   Element, unter seine Inhaltsgroesse zu schrumpfen - alles darunter wurde
+   aus dem Viewport gedrueckt und von overflow:hidden abgeschnitten. */
 .now-playing {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 24px; gap: 8px; text-align: center;
+  flex: 1 1 0; min-height: 92px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 16px 20px; gap: 6px; text-align: center;
 }
-.np-status { font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #666; }
-.np-status.live { color: #00e676; }
-.np-title { font-size: clamp(28px, 9.5vw, 48px); font-weight: 900; line-height: 1.15; }
-.np-artist { font-size: clamp(20px, 6.5vw, 30px); color: #999; font-weight: 700; }
-.np-meta { font-size: 13px; color: #666; margin-top: 4px; }
-.np-device { font-size: 13px; color: #555; margin-top: 6px; }
+.np-title  { font-size: clamp(22px, 8vw, 40px); font-weight: 900; line-height: 1.12; }
+.np-artist { font-size: clamp(16px, 5.5vw, 26px); color: #999; font-weight: 700; line-height: 1.2; }
+.np-meta   { font-size: 12px; color: #666; margin-top: 2px; }
 
-.feedback-row {
-  flex-shrink: 0; display: flex; gap: 14px; padding: 0 20px 18px;
+.progress-wrap { flex: 0 0 auto; padding: 0 20px 8px; }
+.progress-bar { height: 4px; border-radius: 2px; background: #222; overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: #e8001c; transition: width .25s linear; }
+.progress-times {
+  display: flex; justify-content: space-between; font-size: 11px; color: #555;
+  font-variant-numeric: tabular-nums; margin-top: 4px;
 }
+.progress-wrap.hidden { visibility: hidden; }
+
+.feedback-row { flex: 0 0 auto; display: flex; gap: 12px; padding: 0 16px 10px; }
 .btn-feedback {
-  flex: 1; border: none; cursor: pointer; border-radius: 18px; font-family: inherit;
-  font-weight: 800; padding: 22px 0; display: flex; flex-direction: column; align-items: center;
-  gap: 6px; -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
+  flex: 1; border: none; cursor: pointer; border-radius: 16px; font-family: inherit;
+  font-weight: 800; padding: 13px 0; display: flex; flex-direction: column; align-items: center;
+  gap: 4px; -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
   transition: transform .1s, filter .1s;
 }
-.btn-feedback .ico { font-size: 30px; }
-.btn-feedback .lbl { font-size: 14px; }
+.btn-feedback .ico { font-size: 24px; line-height: 1; }
+.btn-feedback .lbl { font-size: 13px; }
 .btn-feedback:active { transform: scale(0.92); filter: brightness(1.3); }
-.btn-feedback:disabled { opacity: 0.35; cursor: default; }
-.btn-dislike { background: #1e0306; color: #ff8fa0; border: 2px solid #5a1018; }
-.btn-like    { background: #0d1e0d; color: #8fffa0; border: 2px solid #204020; }
+.btn-feedback:disabled { opacity: 0.3; cursor: default; }
+.btn-dislike  { background: #1e0306; color: #ff8fa0; border: 2px solid #5a1018; }
+.btn-like     { background: #0d1e0d; color: #8fffa0; border: 2px solid #204020; }
 .btn-favorite { background: rgba(255,255,255,0.05); color: #999; border: 2px solid #444; }
 .btn-favorite.favorite-active { background: #2a0810; color: #ff4d6d; border-color: #e8001c; }
 .btn-feedback.sent { filter: brightness(1.6); }
 
-.controls { flex-shrink: 0; padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.controls { flex: 0 0 auto; padding: 0 16px; display: flex; flex-direction: column; gap: 8px; }
+.btn-skip {
+  border: 1.5px solid #444; cursor: pointer; border-radius: 13px; font-family: inherit;
+  background: rgba(255,255,255,0.05); color: #fff; font-size: 15px; font-weight: 800;
+  padding: 11px 0; -webkit-tap-highlight-color: transparent; user-select: none;
+  touch-action: manipulation; transition: transform .1s;
+}
+.btn-skip:active { transform: scale(0.97); border-color: #666; }
+.btn-skip:disabled { opacity: 0.3; cursor: default; }
+
+/* Beschriftung neben der Zeile statt darueber - spart rund 30px Hoehe,
+   die auf kurzen Displays am unteren Rand gefehlt haben. */
+.ctl-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ctl-key {
+  flex: 0 0 46px; font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+  text-transform: uppercase; color: #555;
+}
+.ctl-val {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 700; color: #999;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctl-line > button.link {
+  flex: 0 0 auto; background: none; border: none; color: #777; font-family: inherit;
+  font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; padding: 4px 0;
+}
+.pill-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.pill {
+  flex-shrink: 0; padding: 7px 13px; border-radius: 18px; border: 1.5px solid #444;
+  background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
+  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+.pill.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.18); }
+.hidden { display: none !important; }
+
 .power-row { display: flex; gap: 10px; }
 .btn-power {
-  flex: 1; min-width: 0; border: none; cursor: pointer; border-radius: 16px; font-family: inherit;
-  font-size: 18px; font-weight: 900; letter-spacing: 0.5px; padding: 18px 0;
+  flex: 1; min-width: 0; border: none; cursor: pointer; border-radius: 15px; font-family: inherit;
+  font-size: 17px; font-weight: 900; letter-spacing: 0.3px; padding: 15px 4px;
   -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
   transition: transform .1s, filter .1s;
 }
 .btn-power:active { transform: scale(0.96); }
-.btn-power.start  { background: #e8001c; color: #fff; box-shadow: 0 0 30px rgba(232,0,28,0.4); }
+.btn-power .sub { display: block; font-size: 11px; font-weight: 700; opacity: 0.8; margin-top: 2px; }
+.btn-power.start  { background: #e8001c; color: #fff; box-shadow: 0 0 26px rgba(232,0,28,0.35); }
 .btn-power.pause  { background: #222; color: #ccc; border: 2px solid #444; }
-.btn-power.resume { background: #00e676; color: #000; box-shadow: 0 0 30px rgba(0,230,118,0.35); }
-.btn-power:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
-
+.btn-power.resume { background: #00e676; color: #000; box-shadow: 0 0 26px rgba(0,230,118,0.3); }
+.btn-power.busy   { background: #333; color: #aaa; box-shadow: none; }
+.btn-power:disabled { opacity: 0.6; box-shadow: none; cursor: default; }
 .btn-end {
-  flex-shrink: 0; width: 96px; border: 2px solid #444; background: #161616; color: #999;
-  font-family: inherit; font-size: 14px; font-weight: 800; border-radius: 16px; cursor: pointer;
+  flex: 0 0 92px; border: 2px solid #444; background: #161616; color: #999;
+  font-family: inherit; font-size: 14px; font-weight: 800; border-radius: 15px; cursor: pointer;
   -webkit-tap-highlight-color: transparent; user-select: none; touch-action: manipulation;
-  transition: transform .1s;
 }
 .btn-end:active { transform: scale(0.96); color: #fff; border-color: #e8001c; }
 .btn-end:disabled { opacity: 0.3; cursor: default; }
 
-.btn-skip {
-  border: 1.5px solid #444; cursor: pointer; border-radius: 14px; font-family: inherit;
-  background: rgba(255,255,255,0.05); color: #fff; font-size: 15px; font-weight: 800;
-  padding: 14px 0; -webkit-tap-highlight-color: transparent; user-select: none;
-  touch-action: manipulation; transition: transform .1s, filter .1s;
+/* Wird nur eingeblendet, wenn wirklich etwas im Argen liegt. */
+.alert {
+  flex: 0 0 auto; margin: 0 16px 8px; padding: 10px 12px; border-radius: 12px;
+  background: #2a0810; border: 1.5px solid #7a1020; font-size: 13px; line-height: 1.35; color: #ffc2cc;
 }
-.btn-skip:active { transform: scale(0.97); border-color: #666; }
-.btn-skip:disabled { opacity: 0.35; cursor: default; }
-
-.pill-label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #555; margin-bottom: 4px; }
-.device-row, .station-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
-.device-pill {
-  flex-shrink: 0; padding: 8px 14px; border-radius: 20px; border: 1.5px solid #444;
-  background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
-  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+.alert .act { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.alert a, .alert button {
+  font-family: inherit; font-size: 12.5px; font-weight: 800; padding: 8px 11px; border-radius: 9px;
+  border: 1.5px solid #e8001c; background: rgba(232,0,28,0.2); color: #fff;
+  text-decoration: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
-.device-pill.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.18); }
 
-.bottom-status { flex-shrink: 0; padding: 0 16px 12px; font-size: 12px; color: #555; text-align: center; min-height: 16px; }
-.bottom-status.err { color: #ff6b6b; }
+.statusline {
+  flex: 0 0 auto; padding: 8px 16px 2px; font-size: 12px; color: #777; text-align: center;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; min-height: 26px;
+}
+.statusline .dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #444;
+  margin-right: 6px; vertical-align: 1px;
+}
+.statusline.playing .dot { background: #00e676; }
+.statusline.paused  .dot { background: #ffb300; }
+.statusline.trouble .dot { background: #ff3b30; }
+.statusline.busy    .dot { background: #29b6f6; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+.statusline.trouble { color: #ff8fa0; }
+
+.details {
+  flex: 0 0 auto; margin: 6px 16px 0; padding: 10px 12px; border-radius: 10px;
+  background: rgba(255,255,255,0.04); border: 1px solid #222;
+  font-size: 11.5px; color: #888; line-height: 1.6; text-align: left;
+  max-height: 30vh; overflow-y: auto;
+}
+.details b { color: #bbb; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -118,12 +186,17 @@ body {
 </div>
 
 <div class="now-playing">
-  <div class="np-status" id="npStatus">Verbinde…</div>
   <div class="np-title" id="npTitle">—</div>
   <div class="np-artist" id="npArtist"></div>
   <div class="np-meta" id="npMeta"></div>
-  <div class="np-device" id="npDevice"></div>
 </div>
+
+<div class="progress-wrap hidden" id="progressWrap">
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="progress-times"><span id="tElapsed">0:00</span><span id="tTotal">0:00</span></div>
+</div>
+
+<div class="alert hidden" id="alertBox"></div>
 
 <div class="feedback-row">
   <button class="btn-feedback btn-dislike" id="btnDislike" disabled>
@@ -139,147 +212,91 @@ body {
 
 <div class="controls">
   <button class="btn-skip" id="btnSkip" disabled>⏭ Skip</button>
-  <div>
-    <div class="pill-label">Sender</div>
-    <div class="station-row" id="stationRow"></div>
+
+  <div class="ctl-line">
+    <span class="ctl-key">Sender</span>
+    <div class="pill-row" id="stationRow"></div>
   </div>
-  <div>
-    <div class="pill-label">Gerät</div>
-    <div class="device-row" id="deviceRow"></div>
+
+  <div class="ctl-line">
+    <span class="ctl-key">Gerät</span>
+    <div class="ctl-val" id="deviceCurrent">–</div>
+    <button class="link" id="btnToggleDevices">ändern ▾</button>
   </div>
+  <div class="pill-row hidden" id="deviceRow"></div>
+
   <div class="power-row">
-    <button class="btn-power start" id="btnPower">▶ Station starten</button>
+    <button class="btn-power start" id="btnPower">▶ Start</button>
     <button class="btn-end" id="btnEnd" disabled>Beenden</button>
   </div>
 </div>
 
-<div class="bottom-status" id="bottomStatus"></div>
+<div class="statusline" id="statusLine"><span class="dot"></span>Verbinde…</div>
+<div class="details hidden" id="detailsBox"></div>
 
 <script>
 const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbxBbH87136ak1xaEq16iz-x52AiasndeZUhFcrQYbIgNlx2NfWBA_NZlhw7SP7hx6hxrQ/exec';
-const POLL_MS = 20000;
-const DEVICE_POLL_EVERY = 3; // Geraeteliste nur bei jedem 3. Status-Poll auffrischen (~60s)
 
-const npStatus   = document.getElementById('npStatus');
-const npTitle    = document.getElementById('npTitle');
-const npArtist   = document.getElementById('npArtist');
-const npMeta     = document.getElementById('npMeta');
-const npDevice   = document.getElementById('npDevice');
-const btnLike    = document.getElementById('btnLike');
-const btnDislike = document.getElementById('btnDislike');
-const btnSkip    = document.getElementById('btnSkip');
-const btnPower   = document.getElementById('btnPower');
-const btnEnd     = document.getElementById('btnEnd');
-const btnFavorite = document.getElementById('btnFavorite');
-const favIcon    = document.getElementById('favIcon');
-const deviceRow  = document.getElementById('deviceRow');
-const stationRow = document.getElementById('stationRow');
-const bottomStatus = document.getElementById('bottomStatus');
-const btnReload  = document.getElementById('btnReload');
+const IDLE_POLL_MS  = 20000;  // nichts laeuft: gemaechlich nachsehen
+const ERROR_POLL_MS = 12000;  // Problemzustand: etwas haeufiger
+const MIN_POLL_MS   = 6000;
+const MAX_POLL_MS   = 30000;
+
+const $ = id => document.getElementById(id);
+const npTitle = $('npTitle'), npArtist = $('npArtist'), npMeta = $('npMeta');
+const btnLike = $('btnLike'), btnDislike = $('btnDislike'), btnFavorite = $('btnFavorite'), favIcon = $('favIcon');
+const btnSkip = $('btnSkip'), btnPower = $('btnPower'), btnEnd = $('btnEnd'), btnReload = $('btnReload');
+const stationRow = $('stationRow'), deviceRow = $('deviceRow'), deviceCurrent = $('deviceCurrent');
+const btnToggleDevices = $('btnToggleDevices');
+const statusLine = $('statusLine'), detailsBox = $('detailsBox'), alertBox = $('alertBox');
+const progressWrap = $('progressWrap'), progressFill = $('progressFill');
+const tElapsed = $('tElapsed'), tTotal = $('tTotal');
 
 const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3' };
 
+let st = null;              // letzte Server-Antwort
 let currentKey = null;
-let isRunning = false;
-let isPaused = false;
-let sessionActive = false;
 let pollTimer = null;
-let tickCount = 0;
-let starting = false;
-let startingTimeout = null;
-let startingPollTimer = null;
+let tickTimer = null;
+let busy = null;            // Text, solange eine Aktion laeuft
+let devicesOpen = false;
+let detailsOpen = false;
+let knownDevices = [];
+let progressBase = 0;       // progress_ms zum Zeitpunkt der Antwort
+let progressAt = 0;         // lokale Uhrzeit der Antwort
+let autoStartUntil = 0;     // nach "Spotify öffnen": bei Rueckkehr selbst starten
 
-function formatDuration(ms) {
-  const totalSec = Math.round(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return min + ':' + String(sec).padStart(2, '0');
-}
-
-function updatePowerButton(active, paused) {
-  btnPower.classList.remove('start', 'pause', 'resume');
-  if (!active) {
-    btnPower.textContent = '▶ Station starten';
-    btnPower.classList.add('start');
-  } else if (paused) {
-    btnPower.textContent = '▶ Fortsetzen';
-    btnPower.classList.add('resume');
-  } else {
-    btnPower.textContent = '⏸ Pause';
-    btnPower.classList.add('pause');
-  }
-}
-
-function setBottomStatus(text, isErr) {
-  bottomStatus.textContent = text || '';
-  bottomStatus.classList.toggle('err', !!isErr);
+function fmt(ms) {
+  if (!ms && ms !== 0) return '0:00';
+  const s = Math.max(0, Math.round(ms / 1000));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
 function api(action, params) {
-  // _t verhindert, dass Googles Edge-Cache identische GET-URLs (gleiche
-  // action+params) mit einer alten Antwort beantwortet, statt den Call
-  // wirklich serverseitig neu auszufuehren.
-  const qs = new URLSearchParams(Object.assign({ action, _t: Date.now() }, params || {}));
-  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' })
-    .then(r => r.json());
+  const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
+  return fetch(WEBAPP_URL + '?' + qs.toString(), { cache: 'no-store' }).then(r => r.json());
 }
 
-function refreshStatus(alsoLoadDevices) {
-  api('status').then(data => {
-    if (!data.ok) { setBottomStatus('Fehler: ' + data.error, true); return; }
-
-    isRunning = data.isPlaying;
-    isPaused = data.isPaused;
-    sessionActive = data.sessionActive;
-
-    // "Starten" laeuft im Hintergrund (Backend antwortet sofort, die
-    // eigentliche Auswahl+Wiedergabe braucht noch etwas) - solange das noch
-    // nicht bestaetigt ist, bleibt der eigene Status-Text/Button-Zustand
-    // stehen, statt zwischendurch faelschlich "Gestoppt" zu zeigen.
-    if (starting && data.isPlaying) {
-      starting = false;
-      clearTimeout(startingTimeout);
-      clearInterval(startingPollTimer);
-    }
-
-    renderCurrent(data.current);
-    npDevice.textContent = data.device ? ('auf ' + data.device) : '';
-
-    if (!starting) {
-      setBottomStatus('');
-      npStatus.textContent = data.isPlaying ? 'Läuft' : (data.isPaused ? 'Pausiert' : 'Gestoppt');
-      npStatus.classList.toggle('live', data.isPlaying);
-
-      updatePowerButton(data.sessionActive, data.isPaused);
-      btnPower.disabled = false;
-      btnEnd.disabled = !data.sessionActive;
-    }
-
-    btnSkip.disabled = !data.isPlaying;
-
-    if (alsoLoadDevices !== false) loadDevices(data.targetDeviceId);
-  }).catch(err => setBottomStatus('Verbindung fehlgeschlagen: ' + err, true));
+// ── Anzeige ──────────────────────────────────────────────────
+function setBusy(text) {
+  busy = text;
+  render();
 }
 
-// Getrennt von refreshStatus aufrufbar, damit Skip/Dislike den naechsten
-// Song SOFORT aus der eigenen Server-Antwort anzeigen koennen, statt auf
-// einen weiteren Status-Poll warten zu muessen (siehe advanceQueueState_
-// im Backend).
-function renderCurrent(current) {
-  if (current) {
-    npTitle.textContent = current.title;
-    npArtist.textContent = current.artist;
-    currentKey = current.key;
+function renderCurrent(cur) {
+  if (cur) {
+    npTitle.textContent = cur.title || '—';
+    npArtist.textContent = cur.artist || '';
+    currentKey = cur.key || null;
 
-    const metaParts = [];
-    if (current.station) metaParts.push(STATION_LABELS[current.station] || current.station);
-    if (current.playCount) metaParts.push(current.playCount + '× gespielt');
-    if (current.durationMs) metaParts.push(formatDuration(current.durationMs));
-    npMeta.textContent = metaParts.join(' · ');
+    const parts = [];
+    if (cur.station) parts.push(STATION_LABELS[cur.station] || cur.station);
+    if (cur.playCount) parts.push(cur.playCount + '× gespielt');
+    npMeta.textContent = parts.join(' · ');
 
-    btnFavorite.disabled = !current.uri;
-    favIcon.textContent = current.isFavorite ? '♥' : '♡';
-    btnFavorite.classList.toggle('favorite-active', !!current.isFavorite);
+    btnFavorite.disabled = !cur.uri;
+    favIcon.textContent = cur.isFavorite ? '♥' : '♡';
+    btnFavorite.classList.toggle('favorite-active', !!cur.isFavorite);
   } else {
     npTitle.textContent = '—';
     npArtist.textContent = '';
@@ -293,54 +310,284 @@ function renderCurrent(current) {
   btnDislike.disabled = !currentKey;
 }
 
-function loadDevices(targetId) {
-  api('devices').then(data => {
-    if (!data.ok) return;
-    deviceRow.innerHTML = '';
-    data.devices.forEach(d => {
-      const pill = document.createElement('button');
-      pill.className = 'device-pill' + (d.id === (targetId || data.targetDeviceId) ? ' active' : '');
-      pill.textContent = d.name;
-      pill.addEventListener('click', () => {
-        api('setDevice', { id: d.id }).then(() => loadDevices(d.id));
-      });
-      deviceRow.appendChild(pill);
-    });
-  });
-}
-
-// Sender sind unabhaengig ein-/ausschaltbar (nicht wie Geraete exklusiv) -
-// bei mehreren aktiven werden die Playlists gemischt (siehe Backend).
-// knownStations wird nur beim ersten Laden geholt (Label/ID aendern sich
-// nicht); ein Klick zum Umschalten braucht danach nur noch einen einzigen
-// Call (setStations liefert die neue aktive Liste direkt mit), statt einen
-// zweiten stations-Call hinterherzuschicken - war spuerbar traege.
-let knownStations = [];
-
-function renderStationPills(activeIds) {
+function renderStations(list) {
+  if (!list) return;
   stationRow.innerHTML = '';
-  knownStations.forEach(s => {
-    const pill = document.createElement('button');
-    pill.className = 'device-pill' + (activeIds.indexOf(s.id) !== -1 ? ' active' : '');
-    pill.textContent = s.label;
-    pill.addEventListener('click', () => {
-      const idx = activeIds.indexOf(s.id);
-      const next = idx === -1 ? activeIds.concat(s.id) : activeIds.filter(id => id !== s.id);
-      api('setStations', { stations: next.join(',') }).then(result => {
-        if (result.ok) renderStationPills(result.stations);
-      });
+  const activeIds = list.filter(s => s.active).map(s => s.id);
+  list.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'pill' + (s.active ? ' active' : '');
+    b.textContent = s.label;
+    b.addEventListener('click', () => {
+      const next = s.active ? activeIds.filter(id => id !== s.id) : activeIds.concat(s.id);
+      api('setStations', { stations: next.join(',') }).then(r => { if (r.ok) renderStations(r.stations); });
     });
-    stationRow.appendChild(pill);
+    stationRow.appendChild(b);
   });
 }
 
-function loadStations() {
-  api('stations').then(data => {
-    if (!data.ok) return;
-    knownStations = data.stations.map(s => ({ id: s.id, label: s.label }));
-    renderStationPills(data.stations.filter(s => s.active).map(s => s.id));
+function renderDevices() {
+  deviceRow.classList.toggle('hidden', !devicesOpen);
+  btnToggleDevices.textContent = devicesOpen ? 'schließen ▴' : 'ändern ▾';
+  if (!devicesOpen) return;
+
+  deviceRow.innerHTML = '';
+  if (!knownDevices.length) {
+    const s = document.createElement('div');
+    s.style.cssText = 'font-size:12px;color:#666;padding:4px 0;';
+    s.textContent = 'Kein Spotify-Gerät erreichbar.';
+    deviceRow.appendChild(s);
+    return;
+  }
+  knownDevices.forEach(d => {
+    const b = document.createElement('button');
+    b.className = 'pill' + (st && d.id === st.targetDeviceId ? ' active' : '');
+    b.textContent = d.name;
+    b.addEventListener('click', () => {
+      api('setDevice', { id: d.id, name: d.name }).then(() => refresh());
+    });
+    deviceRow.appendChild(b);
   });
 }
+
+function renderAlert() {
+  if (busy || !st) { alertBox.classList.add('hidden'); return; }
+
+  const trouble = ['device_gone', 'error'].indexOf(st.phase) !== -1;
+  const err = st.lastError;
+  if (!trouble && !(err && st.phase !== 'playing')) { alertBox.classList.add('hidden'); return; }
+
+  let html = '<div>' + escapeHtml(trouble ? st.message : err.message) + '</div>';
+  html += '<div class="act">';
+  html += '<a id="lnkSpotify" href="spotify://">Spotify öffnen</a>';
+  if (knownDevices.length) html += '<button id="btnPickDevice">Anderes Gerät</button>';
+  html += '<button id="btnDismiss">Ausblenden</button>';
+  html += '</div>';
+  alertBox.innerHTML = html;
+  alertBox.classList.remove('hidden');
+
+  const lnk = $('lnkSpotify');
+  if (lnk) lnk.addEventListener('click', () => { autoStartUntil = Date.now() + 120000; });
+  const pick = $('btnPickDevice');
+  if (pick) pick.addEventListener('click', () => { devicesOpen = true; renderDevices(); });
+  $('btnDismiss').addEventListener('click', () => { alertBox.classList.add('hidden'); });
+}
+
+function renderDetails() {
+  detailsBox.classList.toggle('hidden', !detailsOpen);
+  if (!detailsOpen || !st) return;
+
+  let h = '';
+  if (st.pool && st.pool.stations) {
+    h += '<b>Vorrat</b><br>';
+    Object.keys(st.pool.stations).forEach(s => {
+      const p = st.pool.stations[s];
+      h += (STATION_LABELS[s] || s) + ': ' + p.fresh + ' neu, ' + p.known + ' bekannt<br>';
+    });
+    h += 'Stand: ' + new Date(st.pool.at).toLocaleTimeString('de-DE') + '<br><br>';
+  }
+  if (st.lastRefill) {
+    h += '<b>Letzter Nachschub</b><br>' + new Date(st.lastRefill.at).toLocaleTimeString('de-DE') +
+         ' · ' + (st.lastRefill.found || 0) + ' von ' + (st.lastRefill.resolved || 0) +
+         ' gefunden, ' + (st.lastRefill.added || 0) + ' neu<br><br>';
+  }
+  h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || st.targetDeviceName || '–') +
+       '<br>Warteschlange: ' + (st.queueAhead || 0) +
+       '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') + '<br>';
+  if (st.lastError) {
+    h += '<br><b style="color:#ff8fa0">Letzter Fehler</b><br>' +
+         new Date(st.lastError.at).toLocaleTimeString('de-DE') + ' [' +
+         escapeHtml(st.lastError.where) + ']<br>' + escapeHtml(st.lastError.message);
+  }
+  detailsBox.innerHTML = h;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function render() {
+  // Statuszeile ist immer eindeutig - nie leer, nie mehrdeutig.
+  let cls = '', text;
+  if (busy) {
+    cls = 'busy'; text = busy;
+  } else if (!st) {
+    text = 'Verbinde…';
+  } else if (!st.ok) {
+    cls = 'trouble'; text = st.message || 'Fehler';
+  } else {
+    text = st.message;
+    if (st.phase === 'playing') cls = 'playing';
+    else if (st.phase === 'paused') cls = 'paused';
+    else if (st.phase === 'device_gone' || st.phase === 'error') cls = 'trouble';
+  }
+  statusLine.className = 'statusline ' + cls;
+  statusLine.innerHTML = '<span class="dot"></span>' + escapeHtml(text);
+
+  const phase = busy ? 'busy' : (st && st.ok ? st.phase : 'idle');
+
+  // Power-Knopf haengt an der Phase, NICHT an sessionActive. Frueher zeigte
+  // er nach einem gescheiterten Start "Pause" an - man kam ohne "Beenden"
+  // nicht mal zu einem zweiten Versuch.
+  btnPower.classList.remove('start', 'pause', 'resume', 'busy');
+  if (busy) {
+    btnPower.innerHTML = escapeHtml(busy);
+    btnPower.classList.add('busy');
+    btnPower.disabled = true;
+  } else if (phase === 'playing') {
+    btnPower.textContent = '⏸ Pause';
+    btnPower.classList.add('pause');
+    btnPower.disabled = false;
+  } else if (phase === 'paused') {
+    btnPower.textContent = '▶ Fortsetzen';
+    btnPower.classList.add('resume');
+    btnPower.disabled = false;
+  } else {
+    // Wenn der Vorrat leer ist, dauert der Start ausnahmsweise laenger -
+    // das steht dann vorher am Knopf, statt hinterher zu ueberraschen.
+    const empty = st && st.ok && st.pool && !st.poolFresh && !st.poolKnown;
+    btnPower.innerHTML = '▶ Start' + (empty ? '<span class="sub">Liste leer – dauert ~20 s</span>' : '');
+    btnPower.classList.add('start');
+    btnPower.disabled = false;
+  }
+
+  btnEnd.disabled = busy || !(st && st.sessionActive);
+  btnSkip.disabled = busy || !(st && st.isPlaying);
+
+  if (st) {
+    deviceCurrent.textContent = st.device || st.targetDeviceName || '–';
+    deviceCurrent.style.color = (st.targetOnline === false) ? '#ff8fa0' : '#999';
+  }
+
+  renderAlert();
+  renderDetails();
+}
+
+// ── Fortschritt lokal weiterzaehlen ──────────────────────────
+function tick() {
+  if (!st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null) {
+    progressWrap.classList.add('hidden');
+    return;
+  }
+  const dur = st.current.durationMs;
+  const pos = Math.min(dur, progressBase + (Date.now() - progressAt));
+  progressWrap.classList.remove('hidden');
+  progressFill.style.width = (100 * pos / dur).toFixed(1) + '%';
+  tElapsed.textContent = fmt(pos);
+  tTotal.textContent = fmt(dur);
+}
+
+// ── Polling: gezielt zum Songende statt stur alle 20 s ───────
+function scheduleNext() {
+  clearTimeout(pollTimer);
+  let delay = IDLE_POLL_MS;
+
+  if (st && st.ok) {
+    if (st.phase === 'playing' && st.current && st.current.durationMs && progressBase !== null) {
+      const left = st.current.durationMs - (progressBase + (Date.now() - progressAt));
+      delay = Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, left + 1500));
+    } else if (st.phase === 'device_gone' || st.phase === 'error' || st.phase === 'stalled') {
+      delay = ERROR_POLL_MS;
+    }
+  }
+  pollTimer = setTimeout(refresh, delay);
+}
+
+function refresh() {
+  return api('status').then(data => {
+    st = data;
+    if (data.ok) {
+      progressBase = (typeof data.progressMs === 'number') ? data.progressMs : null;
+      progressAt = Date.now();
+      renderCurrent(data.current);
+      renderStations(data.stations);
+      if (data.devices) { knownDevices = data.devices; renderDevices(); }
+
+      // Nach "Spotify öffnen": sobald das Gerät wieder da ist, selbst starten.
+      if (autoStartUntil > Date.now() && data.targetOnline && data.phase !== 'playing') {
+        autoStartUntil = 0;
+        doStart();
+        return;
+      }
+    }
+    render();
+    tick();
+    scheduleNext();
+  }).catch(err => {
+    st = { ok: false, message: 'Keine Verbindung: ' + err.message, phase: 'error' };
+    render();
+    scheduleNext();
+  });
+}
+
+// ── Aktionen ─────────────────────────────────────────────────
+function doStart() {
+  setBusy('Starte…');
+  api('startSession').then(r => {
+    if (r.ok) {
+      if (r.devices) knownDevices = r.devices;
+      busy = null;
+      st = Object.assign({}, st || {}, {
+        ok: true, phase: 'playing', message: r.message, isPlaying: true, isPaused: false,
+        sessionActive: true, current: r.current, queueAhead: r.queueAhead,
+        device: r.device, targetOnline: true, lastError: null
+      });
+      progressBase = 0; progressAt = Date.now();
+      renderCurrent(r.current);
+      render();
+      tick();
+      refresh();
+    } else {
+      busy = null;
+      if (r.devices) { knownDevices = r.devices; renderDevices(); }
+      st = Object.assign({}, st || {}, {
+        ok: true, phase: r.code === 'DEVICE_GONE' || r.code === 'NO_DEVICE' ? 'device_gone' : 'error',
+        message: r.message || 'Start fehlgeschlagen'
+      });
+      render();
+      scheduleNext();
+    }
+  }).catch(err => {
+    busy = null;
+    st = { ok: false, message: 'Start fehlgeschlagen: ' + err.message, phase: 'error' };
+    render();
+    scheduleNext();
+  });
+}
+
+btnPower.addEventListener('click', () => {
+  const phase = st && st.ok ? st.phase : 'idle';
+  if (phase === 'playing') {
+    setBusy('Pausiere…');
+    api('pause').then(() => { busy = null; refresh(); })
+      .catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
+  } else if (phase === 'paused') {
+    setBusy('Setze fort…');
+    api('resume').then(r => {
+      busy = null;
+      if (!r.ok && r.devices) knownDevices = r.devices;
+      refresh();
+    }).catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
+  } else {
+    doStart();
+  }
+});
+
+btnEnd.addEventListener('click', () => {
+  setBusy('Beende…');
+  api('stopSession').then(() => { busy = null; refresh(); })
+    .catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
+});
+
+btnSkip.addEventListener('click', () => {
+  btnSkip.disabled = true;
+  api('skip').then(r => {
+    if (r.ok && r.current) { renderCurrent(r.current); progressBase = 0; progressAt = Date.now(); }
+    else if (!r.ok) { st = Object.assign({}, st, { message: r.message, phase: 'error' }); render(); }
+    setTimeout(refresh, 2500);
+  }).catch(() => setTimeout(refresh, 2500));
+});
 
 function flashSent(btn) {
   btn.classList.add('sent');
@@ -350,23 +597,10 @@ function flashSent(btn) {
 btnLike.addEventListener('click', () => {
   if (!currentKey) return;
   flashSent(btnLike);
-  api('like', { key: currentKey }).then(result => {
-    if (result.ok && result.current) {
-      favIcon.textContent = result.current.isFavorite ? '♥' : '♡';
-      btnFavorite.classList.toggle('favorite-active', !!result.current.isFavorite);
-    }
-  });
-});
-
-btnFavorite.addEventListener('click', () => {
-  btnFavorite.disabled = true;
-  api('toggleFavorite').then(result => {
-    btnFavorite.disabled = false;
-    if (result.ok) {
-      favIcon.textContent = result.isFavorite ? '♥' : '♡';
-      btnFavorite.classList.toggle('favorite-active', result.isFavorite);
-    } else {
-      setBottomStatus('Fehler: ' + result.error, true);
+  api('like', { key: currentKey }).then(r => {
+    if (r.ok && r.current) {
+      favIcon.textContent = r.current.isFavorite ? '♥' : '♡';
+      btnFavorite.classList.toggle('favorite-active', !!r.current.isFavorite);
     }
   });
 });
@@ -374,130 +608,45 @@ btnFavorite.addEventListener('click', () => {
 btnDislike.addEventListener('click', () => {
   if (!currentKey) return;
   flashSent(btnDislike);
-  // Dislike stoesst serverseitig auch gleich einen Skip an, Song stoppt sofort.
-  // Der naechste Song kommt direkt in der Antwort mit (Backend kennt ihn ja
-  // selbst, siehe advanceQueueState_) - keine Wartezeit noetig, nur zur
-  // Sicherheit kurz danach den echten Spotify-Status nachgleichen.
-  api('dislike', { key: currentKey }).then(result => {
-    if (result.current) renderCurrent(result.current);
-    setTimeout(refreshStatus, 3000);
+  api('dislike', { key: currentKey }).then(r => {
+    if (r.current) { renderCurrent(r.current); progressBase = 0; progressAt = Date.now(); }
+    setTimeout(refresh, 2500);
   });
 });
 
-btnSkip.addEventListener('click', () => {
-  btnSkip.disabled = true;
-  api('skip').then(result => {
-    if (result.current) renderCurrent(result.current);
-    setTimeout(refreshStatus, 3000);
-  });
-});
-
-btnPower.addEventListener('click', () => {
-  if (sessionActive && isPaused) {
-    // Fortsetzen ist schnell (nur ein Play-Aufruf, kein Playlist-Scrape).
-    btnPower.disabled = true;
-    setBottomStatus('Setze fort…');
-    api('resume').then(() => { btnPower.disabled = false; refreshStatus(); })
-      .catch(err => { btnPower.disabled = false; setBottomStatus('Fehler: ' + err, true); });
-    return;
-  }
-
-  if (sessionActive) {
-    // Pause ist schnell (nur ein Pause-Aufruf) und beendet die Session
-    // NICHT - Fortsetzen bleibt dadurch danach ebenfalls schnell.
-    btnPower.disabled = true;
-    setBottomStatus('Pausiere…');
-    api('pause').then(() => { btnPower.disabled = false; refreshStatus(); })
-      .catch(err => { btnPower.disabled = false; setBottomStatus('Fehler: ' + err, true); });
-    return;
-  }
-
-  // Starten (aus komplett gestopptem Zustand): Backend antwortet sofort,
-  // die eigentliche Auswahl (Playlist scrapen, Spotify durchsuchen) laeuft
-  // im Hintergrund und dauert bis zu einer Minute - Button bleibt bis dahin
-  // sichtbar im "startet"-Zustand, statt so zu wirken, als waere der Tap
-  // ignoriert worden.
-  starting = true;
-  btnPower.disabled = true;
-  btnPower.textContent = '… wird gestartet';
-  setBottomStatus('Starte… (kann bis zu 1 Minute dauern)');
-
-  api('startSession').catch(err => {
-    starting = false;
-    btnPower.disabled = false;
-    setBottomStatus('Fehler: ' + err, true);
-  });
-
-  // Waehrend des Startens zusaetzlich zum normalen Poll-Intervall (das bei
-  // versteckter Seite/gesperrtem Bildschirm pausiert) alle 10s pruefen -
-  // sonst kann die Anzeige haengen bleiben, wenn man z.B. kurz zu Spotify
-  // wechselt um nachzuschauen und die Seite dabei in den Hintergrund geht.
-  clearInterval(startingPollTimer);
-  startingPollTimer = setInterval(() => {
-    if (!starting) { clearInterval(startingPollTimer); return; }
-    refreshStatus(false);
-  }, 10000);
-
-  clearTimeout(startingTimeout);
-  startingTimeout = setTimeout(() => {
-    if (starting) {
-      starting = false;
-      clearInterval(startingPollTimer);
-      // Echten aktuellen Stand nachladen und normal anzeigen, statt pauschal
-      // eine Fehlermeldung zu zeigen, die falsch waere, falls es zwischen-
-      // zeitlich doch geklappt hat und nur kein Poll das mitbekommen hat.
-      refreshStatus();
+btnFavorite.addEventListener('click', () => {
+  btnFavorite.disabled = true;
+  api('toggleFavorite').then(r => {
+    btnFavorite.disabled = false;
+    if (r.ok) {
+      favIcon.textContent = r.isFavorite ? '♥' : '♡';
+      btnFavorite.classList.toggle('favorite-active', r.isFavorite);
     }
-  }, 90000);
+  }).catch(() => { btnFavorite.disabled = false; });
 });
 
-btnEnd.addEventListener('click', () => {
-  btnEnd.disabled = true;
-  setBottomStatus('Beende…');
-  api('stopSession').then(() => refreshStatus())
-    .catch(err => setBottomStatus('Fehler: ' + err, true));
+btnToggleDevices.addEventListener('click', () => {
+  devicesOpen = !devicesOpen;
+  renderDevices();
+  if (devicesOpen && !knownDevices.length) {
+    api('devices').then(r => { if (r.ok) { knownDevices = r.devices; renderDevices(); } });
+  }
 });
 
+statusLine.addEventListener('click', () => { detailsOpen = !detailsOpen; renderDetails(); });
 btnReload.addEventListener('click', () => location.reload());
 
-function tick() {
-  tickCount++;
-  refreshStatus(tickCount % DEVICE_POLL_EVERY === 0);
-}
-
-function startPolling() {
-  stopPolling();
-  pollTimer = setInterval(tick, POLL_MS);
-}
-
-function stopPolling() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-}
-
-// Sobald die Seite/App nicht sichtbar ist (Bildschirm aus, andere App im
-// Vordergrund, Tab gewechselt), komplett aufhoeren zu pollen statt uns auf
-// Browser-Throttling zu verlassen - beim Zurueckkommen sofort einmal
-// aktualisieren und weiterpollen.
+// Bei versteckter Seite gar nicht pollen; beim Zurueckkommen sofort einmal.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    stopPolling();
-  } else {
-    tickCount = 0;
-    refreshStatus(true);
-    startPolling();
-  }
+  if (document.hidden) { clearTimeout(pollTimer); clearInterval(tickTimer); tickTimer = null; }
+  else { if (!tickTimer) tickTimer = setInterval(tick, 500); refresh(); }
 });
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-// Erster Load startet immer sofort (unabhaengig vom initialen
-// visibilityState, der ist in manchen Umgebungen beim allerersten Laden
-// nicht zuverlaessig "visible") - visibilitychange uebernimmt danach.
-refreshStatus(true);
-loadStations();
-startPolling();
+tickTimer = setInterval(tick, 500);
+render();
+refresh();
 </script>
 
 </body>
