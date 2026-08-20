@@ -323,6 +323,7 @@ let progressAt = 0;         // lokale Uhrzeit der Antwort
 // selbstaendig weiter und startet, sobald Spotify erreichbar ist. Sichtbar,
 // damit man weiss, dass Warten reicht und man nichts druecken muss.
 let waitingUntil = 0;
+let waitingSince = 0;   // fuer die Auswertung: wie lange bis das Geraet zurueckkam
 const WAIT_WINDOW_MS = 5 * 60 * 1000;
 const WAIT_POLL_MS   = 5000;    // sichtbar
 const WAIT_BG_POLL_MS = 10000;  // im Hintergrund (Android drosselt das evtl.)
@@ -383,6 +384,51 @@ function fmt(ms) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
+// ── Ereignisprotokoll ────────────────────────────────────────
+// Sammelt lokal und schickt gebuendelt per POST - ein Apps-Script-Aufruf pro
+// Ereignis waere bei 2-3 s Antwortzeit undenkbar. Beim Wegwechseln geht der
+// Rest per sendBeacon raus, damit nichts verlorengeht. Protokollieren darf
+// die App nie ausbremsen oder zum Scheitern bringen: alles in try/catch,
+// keine Wartezeiten, keine Fehleranzeige.
+const LOG_FLUSH_MS  = 30000;
+const LOG_MAX_QUEUE = 30;
+const logSession = Math.random().toString(36).slice(2, 8) + '-' +
+                   new Date().toISOString().slice(11, 19).replace(/:/g, '');
+let logQueue = [];
+
+function logEvent(event, label, detail, ms) {
+  try {
+    logQueue.push({
+      t: Date.now(), event: event,
+      label: (label === undefined || label === null) ? '' : String(label).slice(0, 400),
+      detail: detail === undefined ? '' : detail,
+      ms: (typeof ms === 'number' && isFinite(ms)) ? Math.round(ms) : undefined
+    });
+    if (logQueue.length >= LOG_MAX_QUEUE) flushLog();
+  } catch (e) { /* nie stoeren */ }
+}
+
+function flushLog(useBeacon) {
+  if (!logQueue.length) return;
+  let payload;
+  try {
+    payload = JSON.stringify({ type: 'log', session: logSession, events: logQueue });
+  } catch (e) { logQueue = []; return; }
+  logQueue = [];
+  try {
+    if (useBeacon && navigator.sendBeacon) {
+      // text/plain -> einfacher Request ohne CORS-Preflight, und sendBeacon
+      // ueberlebt das Wegwechseln der App.
+      navigator.sendBeacon(WEBAPP_URL, new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
+    } else {
+      fetch(WEBAPP_URL, { method: 'POST', body: payload, keepalive: true }).catch(() => {});
+    }
+  } catch (e) { /* nie stoeren */ }
+}
+
+setInterval(() => flushLog(), LOG_FLUSH_MS);
+window.addEventListener('pagehide', () => flushLog(true));
+
 let lastBadResponse = null;
 // Gleitender Mittelwert der Antwortzeit. Apps Script braucht 2-3 s pro
 // Aufruf - daraus errechnet sich der Vorlauf fuer den Pause-Befehl, damit
@@ -427,7 +473,11 @@ function api(action, params) {
         ? 'Server antwortet nicht (Zeitlimit)'
         : 'Keine Verbindung'
     }))
-    .then(res => { if (killer) clearTimeout(killer); return res; });
+    .then(res => {
+      if (killer) clearTimeout(killer);
+      logEvent('api', action, res && res.ok === false ? (res.code || 'fehler') : 'ok', Date.now() - t0);
+      return res;
+    });
 }
 
 // ── Anzeige ──────────────────────────────────────────────────
@@ -517,6 +567,7 @@ function renderStations(list) {
     b.className = 'pill' + (s.active ? ' active' : '');
     b.textContent = s.label;
     b.addEventListener('click', () => {
+      logEvent('knopf', 'sender', { getippt: s.label, neuerZustand: s.active ? 'aus' : 'an' });
       const next = s.active ? activeIds.filter(id => id !== s.id) : activeIds.concat(s.id);
       api('setStations', { stations: next.join(',') }).then(r => {
         if (!r.ok) return;
@@ -554,6 +605,7 @@ function renderDevices() {
     b.className = 'pill' + (st && d.id === st.targetDeviceId ? ' active' : '');
     b.textContent = d.name;
     b.addEventListener('click', () => {
+      logEvent('knopf', 'geraet', d.name);
       api('setDevice', { id: d.id, name: d.name }).then(() => refresh());
     });
     deviceRow.appendChild(b);
@@ -614,6 +666,8 @@ function renderDetails() {
        ' (Vorlauf ' + (Math.min(3500, Math.max(300, apiLatency - 1000)) / 1000).toFixed(1) + ' s)' +
        (isWaiting() ? '<br>Warte auf Gerät: noch ' + fmt(waitingUntil - Date.now()) : '') +
        (updateQueue.length ? '<br>Update-Folgen offen: ' + updateQueue.length : '') + '<br>';
+  h += '<br><b>Protokoll</b><br>Sitzung: ' + escapeHtml(logSession) +
+       '<br>gepuffert: ' + logQueue.length + ' Ereignisse<br>';
   if (lastBadResponse) {
     h += '<br><b style="color:#ff8fa0">Unlesbare Serverantwort</b><br>' +
          new Date(lastBadResponse.at).toLocaleTimeString('de-DE') + ' · ' + escapeHtml(lastBadResponse.action) +
@@ -917,6 +971,13 @@ function refresh(isRetry) {
       if (lastSeenSongUri && newUri && newUri !== lastSeenSongUri && data.phase === 'playing' && !interjectionActive) {
         songsSinceInterjection++;
         triggeredForUri = null;
+        logEvent('song', (data.current.artist || '') + ' – ' + (data.current.title || ''), {
+          sender: data.current.station || null,
+          schonGespielt: data.current.playCount,
+          dauerMs: data.current.durationMs,
+          nochInListe: data.queueAhead,
+          fremd: !data.current.key
+        });
         // Reaktives Netz nur, wenn der neue Song gerade erst angefangen hat.
         // Sonst schnitte es mitten hinein - genau das sollte nicht passieren.
         // Ist der Song schon laenger unterwegs, wird nur gezaehlt und aufs
@@ -927,6 +988,8 @@ function refresh(isRetry) {
 
       // Wartezustand: sobald das Gerät antwortet, von selbst starten.
       if (waitingUntil > Date.now() && data.targetOnline && data.phase !== 'playing') {
+        logEvent('warten_ende', 'Gerät wieder da', null, waitingSince ? Date.now() - waitingSince : undefined);
+        waitingSince = 0;
         waitingUntil = 0;
         doStart();
         return;
@@ -934,6 +997,8 @@ function refresh(isRetry) {
       if (waitingUntil && Date.now() > waitingUntil) {
         // Nicht stumm aufgeben - sagen, dass jetzt Handarbeit noetig ist.
         waitingUntil = 0;
+        logEvent('warten_abgelaufen', 'kein Gerät gefunden', null, waitingSince ? Date.now() - waitingSince : undefined);
+        waitingSince = 0;
         setSoftError('Kein Gerät gefunden – Spotify öffnen und Start drücken', 'device_gone');
         scheduleNext();
         return;
@@ -999,6 +1064,7 @@ function doStart(opts) {
       // weiterprueferen und starten, sobald Spotify antwortet. Frueher musste
       // man dafuer erst den "Spotify öffnen"-Knopf benutzen.
       if (['DEVICE_GONE', 'NO_DEVICE', 'PLAY_FAILED'].indexOf(r.code) !== -1) {
+        if (!isWaiting()) { waitingSince = Date.now(); logEvent('warten_start', r.code, r.message); }
         waitingUntil = Date.now() + WAIT_WINDOW_MS;
       }
       render();
@@ -1069,8 +1135,12 @@ function cancelInterjection(reason) {
 }
 
 async function startInterjection(item, kind) {
+  const beginn = Date.now();
   interjectionActive = { item: item, kind: kind, paused: false };
   let watchdog = null;
+  logEvent('beitrag_start', (item.show || '') + ' – ' + (item.title || ''), {
+    art: kind, quelle: item.source, laengeMs: item.durationMs
+  });
   render();
 
   // playerPause/-Resume ruehren bewusst NICHT an Session/Pause-Zustand
@@ -1135,6 +1205,7 @@ async function startInterjection(item, kind) {
   interjectionCancelReason = null;
   interjectionResolve = null;
 
+  const gehoert = newsAudio.currentTime || 0;
   newsAudio.onended = null; newsAudio.onerror = null; newsAudio.ontimeupdate = null;
   newsAudio.pause();
   newsAudio.removeAttribute('src');
@@ -1143,6 +1214,14 @@ async function startInterjection(item, kind) {
   interjectionActive = null;
   seekRow.classList.add('hidden');
   feedbackRow.classList.remove('hidden');
+
+  logEvent('beitrag_ende', (item.show || '') + ' – ' + (item.title || ''), {
+    art: kind,
+    grund: cancelReason || 'zuende',
+    gehoertSek: Math.round(gehoert),
+    vonSek: Math.round((item.durationMs || 0) / 1000),
+    zurueckAufAnfang: resumeSeekMs === 0
+  }, Date.now() - beginn);
 
   if (cancelReason !== 'end_session') {
     const params = (resumeSeekMs !== null) ? { seekMs: resumeSeekMs } : undefined;
@@ -1153,6 +1232,7 @@ async function startInterjection(item, kind) {
 }
 
 btnNews.addEventListener('click', () => {
+  logEvent('knopf', 'news', { warVorgemerkt: !!pendingNews, laeuft: !!(st && st.isPlaying) });
   if (pendingNews) {
     // erneutes Tippen nimmt die Anfrage wieder zurueck
     pendingNews = null;
@@ -1176,6 +1256,7 @@ btnNews.addEventListener('click', () => {
 });
 
 btnAktuelles.addEventListener('click', () => {
+  logEvent('knopf', 'aktuelles', { neuerZustand: !aktuellesOn ? 'an' : 'aus' });
   aktuellesOn = !aktuellesOn;
   localStorage.setItem('aktuellesOn', aktuellesOn ? '1' : '0');
   btnAktuelles.classList.toggle('active', aktuellesOn);
@@ -1186,6 +1267,7 @@ btnAktuelles.addEventListener('click', () => {
 });
 
 btnPower.addEventListener('click', () => {
+  logEvent('knopf', 'power', { phase: interjectionActive ? 'einspielung' : (st && st.phase), wartet: isWaiting() });
   // Waehrend einer Einspielung steuert der Knopf den Podcast, nicht Spotify.
   if (interjectionActive) {
     if (newsAudio.paused) { newsAudio.play().catch(() => {}); interjectionActive.paused = false; }
@@ -1212,6 +1294,7 @@ btnPower.addEventListener('click', () => {
 });
 
 btnEnd.addEventListener('click', () => {
+  logEvent('knopf', 'beenden', { phase: st && st.phase });
   // Notausgang: eine laufende Einspielung sofort abbrechen, OHNE sie danach
   // fortzusetzen - stopSession() pausiert ohnehin gleich alles. Auch den
   // Update-Modus beenden, sonst liefe er nach dem naechsten Start weiter.
@@ -1228,6 +1311,8 @@ btnEnd.addEventListener('click', () => {
 });
 
 btnSkip.addEventListener('click', () => {
+  logEvent('knopf', 'skip', { waehrendEinspielung: !!interjectionActive,
+                              song: curSong ? (curSong.artist + ' – ' + curSong.title) : null });
   if (interjectionActive) { cancelInterjection('user_skip'); return; }
   btnSkip.disabled = true;
   api('skip').then(r => {
@@ -1243,6 +1328,7 @@ function flashSent(btn) {
 }
 
 btnLike.addEventListener('click', () => {
+  logEvent('knopf', 'like', curSong ? (curSong.artist + ' – ' + curSong.title) : null);
   if (!currentKey) return;
   flashSent(btnLike);
   api('like', { key: currentKey }).then(r => {
@@ -1254,6 +1340,7 @@ btnLike.addEventListener('click', () => {
 });
 
 btnDislike.addEventListener('click', () => {
+  logEvent('knopf', 'dislike', curSong ? (curSong.artist + ' – ' + curSong.title) : null);
   if (!currentKey) return;
   flashSent(btnDislike);
   api('dislike', { key: currentKey }).then(r => {
@@ -1263,6 +1350,7 @@ btnDislike.addEventListener('click', () => {
 });
 
 btnFavorite.addEventListener('click', () => {
+  logEvent('knopf', 'favorit', curSong ? (curSong.artist + ' – ' + curSong.title) : null);
   btnFavorite.disabled = true;
   api('toggleFavorite').then(r => {
     btnFavorite.disabled = false;
@@ -1287,10 +1375,11 @@ function seekBy(seconds) {
   const target = newsAudio.currentTime + seconds;
   newsAudio.currentTime = Math.max(0, dur ? Math.min(dur - 0.5, target) : Math.max(0, target));
 }
-btnBack5.addEventListener('click', () => seekBy(-5));
-btnFwd10.addEventListener('click', () => seekBy(10));
+btnBack5.addEventListener('click', () => { logEvent('knopf', 'zurueck5', Math.round(newsAudio.currentTime)); seekBy(-5); });
+btnFwd10.addEventListener('click', () => { logEvent('knopf', 'vor10', Math.round(newsAudio.currentTime)); seekBy(10); });
 
 btnUpdate.addEventListener('click', () => {
+  logEvent('knopf', 'update', { offeneFolgen: updateQueue.length });
   if (updateQueue.length) {
     // Erneutes Tippen bricht den Modus ab (eine gerade laufende Folge nicht).
     updateQueue = [];
@@ -1328,9 +1417,12 @@ btnReload.addEventListener('click', () => location.reload());
 // Bei versteckter Seite gar nicht pollen; beim Zurueckkommen sofort einmal.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    logEvent('app_hintergrund', '', { wartet: isWaiting(), einspielung: !!interjectionActive });
+    flushLog(true);
     clearInterval(tickTimer); tickTimer = null;
     scheduleNext(); // pollt nur weiter, wenn wir auf ein Geraet warten
   } else {
+    logEvent('app_vordergrund', '', { anzeigeVeraltet: isStale() });
     if (!tickTimer) tickTimer = setInterval(tick, 500);
     // Sofort sichtbar machen, dass der angezeigte Stand von vorhin ist -
     // der Abruf braucht ein paar Sekunden, und genau in diesem Fenster stand
@@ -1354,6 +1446,12 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 btnAktuelles.classList.toggle('active', aktuellesOn);
 if (aktuellesOn) { rollInterjectionThreshold(); prefetchNextAktuelles(); }
 renderUpdateButton();
+
+logEvent('app_start', navigator.userAgent.slice(0, 120), {
+  fenster: window.innerWidth + 'x' + window.innerHeight,
+  aktuellesAn: aktuellesOn,
+  standalone: window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
+});
 
 tickTimer = setInterval(tick, 500);
 render();
