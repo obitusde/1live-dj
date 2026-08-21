@@ -319,6 +319,7 @@ let detailsOpen = false;
 let knownDevices = [];
 let progressBase = 0;       // progress_ms zum Zeitpunkt der Antwort
 let progressAt = 0;         // lokale Uhrzeit der Antwort
+let progressKorrekturMs = 0; // wie viel auf den gemeldeten Stand addiert wurde
 // Wartezustand: nach einem am Geraet gescheiterten Start prueft die App
 // selbstaendig weiter und startet, sobald Spotify erreichbar ist. Sichtbar,
 // damit man weiss, dass Warten reicht und man nichts druecken muss.
@@ -348,6 +349,7 @@ let updateQueue = [];                 // "Update"-Modus: die vier Folgen der Rei
 // Start-Aufruf setzt den Kontext neu, siehe topUpQueue_/handleStartSession).
 let pendingStationSwitch = false;
 let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
+let resumeSkipNext = false;           // true, wenn noch ein Ausklang-Rest zu ueberspringen ist
 let interjectionResolve = null;       // laesst Skip/Beenden die laufende Einspielung sofort abbrechen
 let interjectionCancelReason = null;  // 'end_session' verhindert das automatische Fortsetzen danach
 let lastSeenSongUri = null;
@@ -868,13 +870,13 @@ function tick() {
   tElapsed.textContent = fmt(pos);
   tTotal.textContent = fmt(dur);
 
-  // Der Pause-Befehl laeuft ueber Apps Script und braucht 2-3 Sekunden bis er
-  // bei Spotify ankommt. Loesen wir exakt am Songende aus, spielt der naechste
-  // Song genau diese Zeit an, bevor es still wird. Deshalb um die gemessene
-  // Antwortzeit vorziehen (minus ~1 s, damit wir eher knapp NACH dem Ende
-  // landen als davor - dort greift dann das Zuruecksetzen auf 0).
+  // Der Pause-Befehl braucht 2-3 s bis er bei Spotify ankommt und schwankt
+  // dabei um gut eine Sekunde. Wir zielen jetzt bewusst knapp VOR das
+  // Songende: ein angeschnittener Ausklang faellt kaum auf, ein Fehlstart des
+  // naechsten Songs sehr wohl. Beide Faelle werden beim Fortsetzen sauber
+  // aufgeloest (siehe startInterjection), egal auf welcher Seite wir landen.
   const left = dur - pos;
-  const lead = Math.min(3500, Math.max(300, apiLatency - 1000));
+  const lead = Math.min(4500, Math.max(600, apiLatency + 600));
   if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri) {
     if (pendingStationSwitch) {
       // Vorrang vor Einspielungen: erst die Liste tauschen, Beitraege kommen
@@ -941,7 +943,9 @@ let lastPollAt = 0;
 
 function refresh(isRetry) {
   lastPollAt = Date.now();
+  const tAb = Date.now();
   return api('status').then(data => {
+    const gesamtMs = Date.now() - tAb;
     if (!data.ok && data.code === 'BAD_RESPONSE' && !isRetry) {
       // Googles Frontend liefert sporadisch eine Fehlerseite statt unserer
       // Antwort. Einmal still nachfassen, bevor der Nutzer davon erfaehrt.
@@ -955,7 +959,14 @@ function refresh(isRetry) {
     }
     st = data;
     if (data.ok) {
-      progressBase = (typeof data.progressMs === 'number') ? data.progressMs : null;
+      // Der gemeldete Stand ist beim Eintreffen schon veraltet: Spotify hat
+      // ihn vor progressAgeMs gemessen (Serverzeit), danach kam noch der
+      // Rueckweg dazu. Beides draufrechnen, sonst glauben wir das Lied sei
+      // 1-2 s weniger weit - und loesen die Einspielung zu spaet aus.
+      const netzMs = Math.max(0, gesamtMs - (data.serverMs || 0));
+      progressKorrekturMs = Math.round((data.progressAgeMs || 0) + netzMs / 2);
+      progressBase = (typeof data.progressMs === 'number')
+        ? data.progressMs + progressKorrekturMs : null;
       progressAt = Date.now();
       renderCurrent(data.current);
       renderStations(data.stations);
@@ -1147,13 +1158,40 @@ async function startInterjection(item, kind) {
   // (siehe News.js) - eine Nachrichten-Unterbrechung soll nicht wie ein
   // Nutzer-Pause aussehen oder den Nachschub-Trigger stoppen.
   resumeSeekMs = null;
+  resumeSkipNext = false;
+
+  // Welcher Song lief, als wir ausgeloest haben? Daran erkennen wir nach dem
+  // Pausieren, auf welcher Seite der Songgrenze wir gelandet sind.
+  const zielUri = (st && st.current) ? st.current.uri : null;
+  const zielDauer = (st && st.current) ? st.current.durationMs : null;
+
   try {
     const pauseRes = await api('playerPause');
-    // Da wir erst nach Songende ausloesen, laeuft der naechste Song meist
-    // schon ein, zwei Sekunden. Den setzen wir beim Fortsetzen auf 0 zurueck,
-    // damit er wirklich komplett laeuft.
-    if (pauseRes && pauseRes.ok && typeof pauseRes.progressMs === 'number' && pauseRes.progressMs < 20000) {
-      resumeSeekMs = 0;
+    if (pauseRes && pauseRes.ok && typeof pauseRes.progressMs === 'number') {
+      let versatzMs = null;
+      if (zielUri && pauseRes.uri === zielUri) {
+        // Noch auf dem alten Song: wir waren zu FRUEH. Der Rest ist nur noch
+        // ein Ausklang-Fetzen - nach der Einspielung ueberspringen, damit der
+        // naechste Song sauber von vorne beginnt statt mit einem Restsekunde.
+        resumeSkipNext = true;
+        if (zielDauer) versatzMs = -(zielDauer - pauseRes.progressMs);
+      } else if (pauseRes.progressMs < 20000) {
+        // Schon auf dem naechsten Song: wir waren zu SPAET. Beim Fortsetzen
+        // auf 0 zuruecksetzen, damit er trotzdem komplett laeuft.
+        resumeSeekMs = 0;
+        versatzMs = pauseRes.progressMs;
+      }
+      // Zur Auswertung: wie genau haben wir die Songgrenze getroffen?
+      // Negativ = zu frueh (Ausklang angeschnitten), positiv = zu spaet
+      // (naechster Song hat angespielt).
+      if (versatzMs !== null) {
+        logEvent('grenze', (versatzMs < 0 ? 'zu frueh' : 'zu spaet'), {
+          versatzMs: Math.round(versatzMs),
+          korrekturWar: progressKorrekturMs,
+          vorlaufWar: Math.min(4500, Math.max(600, apiLatency + 600)),
+          behandlung: resumeSkipNext ? 'ueberspringen' : 'auf 0 zurueck'
+        }, Math.abs(Math.round(versatzMs)));
+      }
     }
   } catch (e) { /* egal, weiter mit der Einspielung */ }
 
@@ -1224,10 +1262,14 @@ async function startInterjection(item, kind) {
   }, Date.now() - beginn);
 
   if (cancelReason !== 'end_session') {
-    const params = (resumeSeekMs !== null) ? { seekMs: resumeSeekMs } : undefined;
-    try { await api('playerResume', params); } catch (e) { /* naechster Poll zeigt den echten Stand */ }
+    const params = {};
+    if (resumeSkipNext) params.skipNext = '1';
+    if (resumeSeekMs !== null) params.seekMs = resumeSeekMs;
+    try { await api('playerResume', Object.keys(params).length ? params : undefined); }
+    catch (e) { /* naechster Poll zeigt den echten Stand */ }
   }
   resumeSeekMs = null;
+  resumeSkipNext = false;
   refresh();
 }
 
