@@ -989,11 +989,12 @@ function refresh(isRetry) {
           nochInListe: data.queueAhead,
           fremd: !data.current.key
         });
-        // Reaktives Netz nur, wenn der neue Song gerade erst angefangen hat.
-        // Sonst schnitte es mitten hinein - genau das sollte nicht passieren.
-        // Ist der Song schon laenger unterwegs, wird nur gezaehlt und aufs
-        // naechste Songende gewartet (tick() uebernimmt das).
-        if ((data.progressMs || 0) < 10000 && interjectionDue()) maybeTriggerInterjection();
+        // Reaktives Netz nur unmittelbar nach dem Songwechsel. Mit 10 s war
+        // das Fenster zu weit: am 21.08. um 09:22 loeste es 8 s nach dem
+        // Songbeginn aus - man hoerte ein Songfragment, dann den Beitrag.
+        // Ist der Song schon weiter, wird nur gezaehlt und aufs naechste
+        // Songende gewartet (tick() uebernimmt das).
+        if ((data.progressMs || 0) < 3000 && interjectionDue()) maybeTriggerInterjection();
       }
       lastSeenSongUri = newUri || lastSeenSongUri;
 
@@ -1170,10 +1171,21 @@ async function startInterjection(item, kind) {
     if (pauseRes && pauseRes.ok && typeof pauseRes.progressMs === 'number') {
       let versatzMs = null;
       if (zielUri && pauseRes.uri === zielUri) {
-        // Noch auf dem alten Song: wir waren zu FRUEH. Der Rest ist nur noch
-        // ein Ausklang-Fetzen - nach der Einspielung ueberspringen, damit der
-        // naechste Song sauber von vorne beginnt statt mit einem Restsekunde.
-        resumeSkipNext = true;
+        // Noch auf demselben Song - zwei sehr verschiedene Faelle:
+        const restMs = zielDauer ? (zielDauer - pauseRes.progressMs) : null;
+        if (restMs !== null && restMs <= 5000) {
+          // Kurz VOR dem Songende: nur noch ein Ausklang-Fetzen. Nach der
+          // Einspielung ueberspringen, damit der naechste Song sauber beginnt.
+          resumeSkipNext = true;
+        } else {
+          // Mitten im Song gelandet - passiert, wenn die Einspielung ueber das
+          // reaktive Netz kurz NACH einem Songwechsel ausgeloest wurde.
+          // Frueher wurde auch hier uebersprungen und damit ein gerade erst
+          // begonnener Song komplett weggeworfen (beobachtet am 21.08. um
+          // 09:22: "Memories" lief 8 s, dann Beitrag, dann war der Song weg).
+          // Stattdessen zurueck auf Anfang.
+          resumeSeekMs = 0;
+        }
         if (zielDauer) versatzMs = -(zielDauer - pauseRes.progressMs);
       } else if (pauseRes.progressMs < 20000) {
         // Schon auf dem naechsten Song: wir waren zu SPAET. Beim Fortsetzen
@@ -1189,7 +1201,8 @@ async function startInterjection(item, kind) {
           versatzMs: Math.round(versatzMs),
           korrekturWar: progressKorrekturMs,
           vorlaufWar: Math.min(4500, Math.max(600, apiLatency + 600)),
-          behandlung: resumeSkipNext ? 'ueberspringen' : 'auf 0 zurueck'
+          behandlung: resumeSkipNext ? 'ueberspringen' : 'auf 0 zurueck',
+        gleicherSong: !!(zielUri && pauseRes.uri === zielUri)
         }, Math.abs(Math.round(versatzMs)));
       }
     }
