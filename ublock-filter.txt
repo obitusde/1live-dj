@@ -1,0 +1,128 @@
+! Title: Persoenliche Filterliste (obitusde)
+! Description: Mobile News Reading Focus - Footer, Teaser, Empfehlungen, Kommentare
+! Homepage: https://github.com/obitusde/1live-dj
+! Expires: 1 day
+! Last modified: 2026-08-25
+!
+! ==============================================================================
+! Cleaned & Refactored uBlock Origin Filter List (Mobile News Reading Focus)
+! ==============================================================================
+
+! --- Tutti.ch ---
+tutti.ch##[class*="phishing"]
+tutti.ch##[class*="warning"]
+tutti.ch##[class*="alert"]
+tutti.ch##div[role="alert"]
+
+! --- Heise.de ---
+heise.de##.footer
+heise.de##.article-footer
+heise.de##.article-layout__footer
+heise.de##.footer__list
+heise.de###article-page-upscore
+heise.de###wtma_teaser_ho_vertrieb_inline_branding
+heise.de##.a-u-inline
+heise.de##.ho-text.ho-bg.shadow-modules.z-50
+! Wildcard match replacing static image URL string
+||heise.cloudimg.io/*/Fallback_KI-Update_*$image
+
+! --- Heise.de: Bestenlisten & Kaufberatung am Artikelende ---
+heise.de##section:has(h2:has-text("Bestenliste"))
+heise.de##div.a-layout:has(h2:has-text("Bestenliste"))
+heise.de##[class*="bestenliste"]
+
+! --- Golem.de ---
+golem.de##.go-footer
+golem.de##.go-toolbar
+golem.de##[class*="go-button-bar--cta"]
+golem.de##.go-teaser-block--nextread
+golem.de##.go-teaser-block--career
+golem.de##.go-grid--50-50.go-grid
+golem.de##.go-tag-list__tags
+
+! --- SRF.ch ---
+srf.ch##.articlepage__banner-container
+srf.ch##.footer
+srf.ch##.js-related-items-list
+srf.ch##.autobox.collection
+srf.ch##.expandable-box
+
+! --- Süddeutsche Zeitung ---
+sueddeutsche.de##.sz-global-footer
+sueddeutsche.de##[role="contentinfo"]
+sueddeutsche.de##[data-component="outbrain"]
+
+! --- Zeit Online ---
+zeit.de##.footer
+zeit.de##.comment-section
+zeit.de##.jobbox-ticker
+zeit.de##.zps-widget
+zeit.de##[class*="zoner-injection"]
+zeit.de##.volume-teaser
+zeit.de##.topicbox
+zeit.de##.article-tags__list
+zeit.de##.summy__feedback
+zeit.de##.summy-muted-notice
+
+! --- Tagesschau.de ---
+tagesschau.de##.footer
+tagesschau.de##.sendungsbezug
+tagesschau.de##.buttongroup
+tagesschau.de##.authorline__inner
+! Targets recommendation boxes specifically without breaking text body wrappers
+tagesschau.de##.copytext-element-wrapper:has(.teaser)
+
+! --- Tagesschau.de: "Mehr zum Thema" am Artikelende ---
+tagesschau.de##.copytext-element-wrapper:has(*:has-text("Mehr zum Thema"))
+tagesschau.de##section:has(*:has-text("Mehr zum Thema"))
+
+! --- Tagesschau.de: Artikel-Empfehlungen mitten im Text (Inline-Teaser) ---
+tagesschau.de##.copytext-element-wrapper:has([class*="teaser"])
+tagesschau.de##.copytext-element-wrapper:has(aside)
+tagesschau.de##.copytext-element-wrapper:has(.linklist)
+
+! --- Tagesschau.de: "Mehr zum Thema" (Teaser-Blöcke am Ende) ---
+tagesschau.de##.copytext-element-wrapper:has-text("Mehr zum Thema")
+tagesschau.de##div[class*="columns"]:has-text("Mehr zum Thema")
+tagesschau.de##section:has-text("Mehr zum Thema")
+tagesschau.de##.teaser-list
+
+! --- 20min.ch ---
+www.20min.ch,20min.ch##footer
+www.20min.ch,20min.ch##[class*="TeaserSection_section__"]
+www.20min.ch,20min.ch##.ob-sub-units
+www.20min.ch,20min.ch##[id^="outbrain_widget"]
+www.20min.ch,20min.ch###commentSection
+www.20min.ch,20min.ch###ratingSection
+www.20min.ch,20min.ch###atspace-left
+www.20min.ch,20min.ch###atspace-right
+www.20min.ch,20min.ch##.sc-c2c20e8d-0
+www.20min.ch,20min.ch##.sc-ba430ca-7
+! 21.08.2026 https://www.20min.ch
+www.20min.ch##.etPrkr.sc-64e45e7-0
+
+! --- 20min.ch: Empfehlungen ("D'autres articles à lire") ---
+! Erfasst den Empfehlungsblock, ignoriert Container mit mehr als 2 Text-Absätzen
+!20min.ch##div:has-text("D'autres articles à lire"):not(:has(p:nth-of-type(3)))
+
+! --- Portfolio Sharesight ---
+portfolio.sharesight.com##[class*="Boxstyled__Box"]
+
+! --- Google Apps Script ---
+script.google.com##.warning-banner-bar
+
+! --- Focus.de ---
+focus.de##[class*="dockInnerWrapper"]
+
+! --- AllMusic ---
+allmusic.com###basicInfoMeta
+
+! --- National Library of Australia ---
+catalogue.nla.gov.au##.footer-ask-a-librarian
+catalogue.nla.gov.au##.alert-info
+
+! 21.08.2026 https://www.20min.ch
+www.20min.ch##.cTvCnk.sc-f22ec29a-1
+
+! 23.08.2026 https://bib-ostschweiz-genios-de.kb.ezproxy3.sg.ch
+bib-ostschweiz-genios-de.kb.ezproxy3.sg.ch###modal_content > .footer
