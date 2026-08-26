@@ -438,7 +438,13 @@ let apiLatency = 2500;
 // "Unexpected token '<'" beim Nutzer, obwohl die Aktion serverseitig
 // erfolgreich war. Jetzt wird daraus ein sauberer Zustand, den der Aufrufer
 // durch Nachfragen aufloesen kann.
-const API_TIMEOUT_MS = 12000;
+// 12 s lagen UNTERHALB des gemessenen p90 (2026-08-26: Median 4,4 s, p90 12 s,
+// Ausreisser bis 47 s) - die App hat damit einen Teil ihrer Fehler selbst
+// erzeugt und abgebrochene Aufrufe als "laeuft nichts" dargestellt, obwohl der
+// Server sie durchgezogen hat (belegt: ein erfolgreiches "pause" mit 10,3 s).
+// 30 s deckt die allermeisten echten Antworten ab und begrenzt die Wartezeit
+// immer noch. Waehrenddessen zeigt die App "Aktualisiere...", nicht "gestoppt".
+const API_TIMEOUT_MS = 30000;
 
 function api(action, params) {
   const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
