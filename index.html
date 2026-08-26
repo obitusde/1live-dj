@@ -261,13 +261,6 @@ body {
     <div class="pill-row" id="stationRow"></div>
   </div>
 
-  <div class="ctl-line">
-    <span class="ctl-key">Gerät</span>
-    <div class="ctl-val" id="deviceCurrent">–</div>
-    <button class="link" id="btnToggleDevices">ändern ▾</button>
-  </div>
-  <div class="pill-row hidden" id="deviceRow"></div>
-
   <div class="power-row">
     <button class="btn-power start" id="btnPower">▶ Start</button>
     <button class="btn-end" id="btnEnd" disabled>Beenden</button>
@@ -298,8 +291,7 @@ const $ = id => document.getElementById(id);
 const npTitle = $('npTitle'), npArtist = $('npArtist'), npMeta = $('npMeta');
 const btnLike = $('btnLike'), btnDislike = $('btnDislike'), btnFavorite = $('btnFavorite'), favIcon = $('favIcon');
 const btnSkip = $('btnSkip'), btnPower = $('btnPower'), btnEnd = $('btnEnd'), btnReload = $('btnReload');
-const stationRow = $('stationRow'), deviceRow = $('deviceRow'), deviceCurrent = $('deviceCurrent');
-const btnToggleDevices = $('btnToggleDevices');
+const stationRow = $('stationRow');
 const statusLine = $('statusLine'), detailsBox = $('detailsBox'), alertBox = $('alertBox');
 const progressWrap = $('progressWrap'), progressFill = $('progressFill');
 const tElapsed = $('tElapsed'), tTotal = $('tTotal');
@@ -314,9 +306,7 @@ let currentKey = null;
 let pollTimer = null;
 let tickTimer = null;
 let busy = null;            // Text, solange eine Aktion laeuft
-let devicesOpen = false;
 let detailsOpen = false;
-let knownDevices = [];
 let progressBase = 0;       // progress_ms zum Zeitpunkt der Antwort
 let progressAt = 0;         // lokale Uhrzeit der Antwort
 let progressKorrekturMs = 0; // wie viel auf den gemeldeten Stand addiert wurde
@@ -497,7 +487,7 @@ function paintIdle() {
   if (!st || !st.ok) { npTitle.textContent = '—'; npArtist.textContent = ''; npMeta.textContent = ''; return; }
   if (st.phase === 'device_gone') {
     npTitle.textContent = 'Spotify öffnen';
-    npArtist.textContent = (st.targetDeviceName || 'Zielgerät') + ' ist nicht erreichbar';
+    npArtist.textContent = 'Kein Gerät erreichbar';
   } else if (st.phase === 'error') {
     npTitle.textContent = 'Kurz gestört';
     npArtist.textContent = 'versuche es gleich erneut';
@@ -583,37 +573,6 @@ function renderStations(list) {
   });
 }
 
-let deviceSig = '';
-
-function renderDevices() {
-  deviceRow.classList.toggle('hidden', !devicesOpen);
-  btnToggleDevices.textContent = devicesOpen ? 'schließen ▴' : 'ändern ▾';
-  if (!devicesOpen) return;
-
-  const sig = knownDevices.map(d => d.id).join(',') + '|' + (st ? st.targetDeviceId : '');
-  if (sig === deviceSig && deviceRow.childElementCount) return;
-  deviceSig = sig;
-
-  deviceRow.innerHTML = '';
-  if (!knownDevices.length) {
-    const s = document.createElement('div');
-    s.style.cssText = 'font-size:12px;color:#666;padding:4px 0;';
-    s.textContent = 'Kein Spotify-Gerät erreichbar.';
-    deviceRow.appendChild(s);
-    return;
-  }
-  knownDevices.forEach(d => {
-    const b = document.createElement('button');
-    b.className = 'pill' + (st && d.id === st.targetDeviceId ? ' active' : '');
-    b.textContent = d.name;
-    b.addEventListener('click', () => {
-      logEvent('knopf', 'geraet', d.name);
-      api('setDevice', { id: d.id, name: d.name }).then(() => refresh());
-    });
-    deviceRow.appendChild(b);
-  });
-}
-
 function renderAlert() {
   if (busy || !st) { alertBox.classList.add('hidden'); return; }
 
@@ -630,7 +589,6 @@ function renderAlert() {
   let html = isWaiting() ? '' : ('<div>' + escapeHtml(trouble ? st.message : err.message) + '</div>');
   html += '<div class="act"' + (isWaiting() ? ' style="margin-top:0"' : '') + '>';
   html += '<a id="lnkSpotify" href="spotify://">Spotify öffnen</a>';
-  if (knownDevices.length) html += '<button id="btnPickDevice">Anderes Gerät</button>';
   html += '<button id="btnDismiss">Ausblenden</button>';
   html += '</div>';
   alertBox.innerHTML = html;
@@ -638,8 +596,6 @@ function renderAlert() {
 
   const lnk = $('lnkSpotify');
   if (lnk) lnk.addEventListener('click', () => { waitingUntil = Date.now() + WAIT_WINDOW_MS; render(); });
-  const pick = $('btnPickDevice');
-  if (pick) pick.addEventListener('click', () => { devicesOpen = true; renderDevices(); });
   $('btnDismiss').addEventListener('click', () => { alertBox.classList.add('hidden'); });
 }
 
@@ -661,7 +617,7 @@ function renderDetails() {
          ' · ' + (st.lastRefill.found || 0) + ' von ' + (st.lastRefill.resolved || 0) +
          ' gefunden, ' + (st.lastRefill.added || 0) + ' neu<br><br>';
   }
-  h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || st.targetDeviceName || '–') +
+  h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || '–') +
        '<br>Warteschlange: ' + (st.queueAhead || 0) +
        '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') +
        '<br>Antwortzeit: ' + (apiLatency / 1000).toFixed(1) + ' s' +
@@ -735,9 +691,8 @@ function renderInterjection() {
 // dass Warten reicht und man nichts druecken muss.
 function renderWaiting() {
   const restMs = Math.max(0, waitingUntil - Date.now());
-  const name = (st && st.targetDeviceName) || 'dem Gerät';
 
-  npTitle.textContent = 'Warte auf ' + name;
+  npTitle.textContent = 'Warte auf Spotify-Gerät';
   npArtist.textContent = 'Spotify dort öffnen – ich starte von selbst';
   npMeta.textContent = 'noch ' + fmt(restMs);
   npMeta.style.color = '';
@@ -751,7 +706,7 @@ function renderWaiting() {
 
   statusLine.className = 'statusline busy';
   statusLine.innerHTML = '<span class="dot"></span>' +
-    escapeHtml('Warte auf ' + name + ' · starte automatisch');
+    escapeHtml('Warte auf Spotify-Gerät · starte automatisch');
 
   btnPower.classList.remove('start', 'pause', 'resume', 'busy');
   btnPower.classList.add('busy');
@@ -834,11 +789,6 @@ function render() {
   btnEnd.disabled = !!busy;
   btnSkip.disabled = busy || !(st && st.isPlaying);
   btnSkip.textContent = '⏭ Skip'; // renderInterjection() benennt ihn waehrend einer Einspielung um
-
-  if (st) {
-    deviceCurrent.textContent = st.device || st.targetDeviceName || '–';
-    deviceCurrent.style.color = (st.targetOnline === false) ? '#ff8fa0' : '#999';
-  }
 
   if (!curSong || !(st && st.ok && (st.isPlaying || st.phase === 'paused'))) paintIdle();
 
@@ -970,7 +920,6 @@ function refresh(isRetry) {
       progressAt = Date.now();
       renderCurrent(data.current);
       renderStations(data.stations);
-      if (data.devices) { knownDevices = data.devices; renderDevices(); }
 
       // Ein echter Songwechsel (nicht nur ein weiterer Poll desselben Songs)
       // zaehlt fuer "alle 2-3 Lieder" und ist zugleich das Sicherheitsnetz:
@@ -998,11 +947,12 @@ function refresh(isRetry) {
       }
       lastSeenSongUri = newUri || lastSeenSongUri;
 
-      // Wartezustand: sobald das Gerät antwortet, von selbst starten.
-      if (waitingUntil > Date.now() && data.targetOnline && data.phase !== 'playing') {
-        logEvent('warten_ende', 'Gerät wieder da', null, waitingSince ? Date.now() - waitingSince : undefined);
-        waitingSince = 0;
-        waitingUntil = 0;
+      // Wartezustand: bei jedem Abruf waehrenddessen gleich einen Start
+      // versuchen - ohne festes Zielgeraet gibt es kein "online"-Signal mehr
+      // vorab zu pruefen. Klappt es, uebernimmt doStart() selbst die
+      // Zustandspflege; klappt es nicht, laeuft der Wartezustand unveraendert
+      // weiter (doStart() setzt waitingUntil dann erneut).
+      if (waitingUntil > Date.now() && data.phase !== 'playing') {
         doStart();
         return;
       }
@@ -1040,13 +990,12 @@ function doStart(opts) {
   api('startSession').then(r => {
     startInFlight = false;
     if (r.ok) {
-      if (r.devices) knownDevices = r.devices;
       busy = null;
       waitingUntil = 0;
       st = Object.assign({}, st || {}, {
         ok: true, phase: 'playing', message: r.message, isPlaying: true, isPaused: false,
         sessionActive: true, current: r.current, queueAhead: r.queueAhead,
-        device: r.device, targetOnline: true, lastError: null
+        device: r.device, lastError: null
       });
       progressBase = 0; progressAt = Date.now();
       renderCurrent(r.current);
@@ -1062,12 +1011,10 @@ function doStart(opts) {
     } else if (quiet) {
       // Geraet weiterhin nicht da - Wartezustand unveraendert weiterlaufen
       // lassen (nicht neu scharfschalten, sonst liefe das Fenster nie ab).
-      if (r.devices) knownDevices = r.devices;
       render();
       scheduleNext();
     } else {
       busy = null;
-      if (r.devices) { knownDevices = r.devices; renderDevices(); }
       st = Object.assign({}, st || {}, {
         ok: true, phase: r.code === 'DEVICE_GONE' || r.code === 'NO_DEVICE' ? 'device_gone' : 'error',
         message: r.message || 'Start fehlgeschlagen'
@@ -1340,7 +1287,6 @@ btnPower.addEventListener('click', () => {
     setBusy('Setze fort…');
     api('resume').then(r => {
       busy = null;
-      if (!r.ok && r.devices) knownDevices = r.devices;
       refresh();
     }).catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
   } else {
@@ -1414,14 +1360,6 @@ btnFavorite.addEventListener('click', () => {
       btnFavorite.classList.toggle('favorite-active', r.isFavorite);
     }
   }).catch(() => { btnFavorite.disabled = false; });
-});
-
-btnToggleDevices.addEventListener('click', () => {
-  devicesOpen = !devicesOpen;
-  renderDevices();
-  if (devicesOpen && !knownDevices.length) {
-    api('devices').then(r => { if (r.ok) { knownDevices = r.devices; renderDevices(); } });
-  }
 });
 
 function seekBy(seconds) {
