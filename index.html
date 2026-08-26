@@ -307,6 +307,12 @@ let pollTimer = null;
 let tickTimer = null;
 let busy = null;            // Text, solange eine Aktion laeuft
 let detailsOpen = false;
+// "Ich weiss es gerade nicht" ist NICHT dasselbe wie "es laeuft nichts".
+// Rund ein Fuenftel aller Abrufe lief zuletzt ins Zeitlimit; die App zeigte
+// dann denselben aktiven Start-Knopf wie im Ruhezustand - ein Tipper darauf
+// hat die laufende Musik ersetzt. Solange der Stand unklar ist, bietet der
+// Knopf jetzt "nachsehen" statt "starten" an.
+let verbindungUnklar = false;
 let progressBase = 0;       // progress_ms zum Zeitpunkt der Antwort
 let progressAt = 0;         // lokale Uhrzeit der Antwort
 let progressKorrekturMs = 0; // wie viel auf den gemeldeten Stand addiert wurde
@@ -775,6 +781,17 @@ function render() {
     btnPower.textContent = '▶ Fortsetzen';
     btnPower.classList.add('resume');
     btnPower.disabled = false;
+  } else if (!st) {
+    // Noch nie eine Antwort gesehen. Der Abruf dauert im Median 4 s - so lange
+    // stand hier frueher ein aktiver "Start", obwohl die App noch gar nicht
+    // wusste, ob Spotify vielleicht laengst spielt.
+    btnPower.textContent = '⏳ Verbinde…';
+    btnPower.classList.add('busy');
+    btnPower.disabled = true;
+  } else if (verbindungUnklar) {
+    btnPower.innerHTML = '⟳ Status prüfen<span class="sub">Verbindung war gestört</span>';
+    btnPower.classList.add('busy');
+    btnPower.disabled = false;
   } else {
     // Wenn der Vorrat leer ist, dauert der Start ausnahmsweise laenger -
     // das steht dann vorher am Knopf, statt hinterher zu ueberraschen.
@@ -833,7 +850,7 @@ function tick() {
       // dann ab dem naechsten Songende wieder normal.
       triggeredForUri = st.current.uri;
       pendingStationSwitch = false;
-      doStart({ busyText: 'Wechsle Sender…' });
+      doStart({ busyText: 'Wechsle Sender…', force: true });
     } else if (interjectionDue()) {
       triggeredForUri = st.current.uri;
       maybeTriggerInterjection();
@@ -903,10 +920,14 @@ function refresh(isRetry) {
       return;
     }
     if (!data.ok) {
+      // Zeitlimit/Netzfehler heisst: wir wissen den Stand nicht. Das ist etwas
+      // anderes als ein echter Spotify-Fehler, den der Server gemeldet hat.
+      verbindungUnklar = ['TIMEOUT', 'NETWORK', 'BAD_RESPONSE'].indexOf(data.code) !== -1;
       setSoftError(data.message || 'Verbindung gestört', 'error');
       scheduleNext();
       return;
     }
+    verbindungUnklar = false;
     st = data;
     if (data.ok) {
       // Der gemeldete Stand ist beim Eintreffen schon veraltet: Spotify hat
@@ -982,29 +1003,40 @@ function refresh(isRetry) {
 // Erfolgsfall einen kompletten Roundtrip.
 let startInFlight = false;
 
+// force=true: laufende Wiedergabe bewusst ersetzen. Nur der Senderwechsel
+// braucht das - er soll die Liste ja gerade austauschen. Ohne force uebernimmt
+// der Server laufende Musik, statt ein anderes Lied zu starten.
 function doStart(opts) {
   const quiet = !!(opts && opts.quiet);
+  const force = !!(opts && opts.force);
   if (startInFlight) return;      // kein Doppelstart durch ueberlappende Versuche
   startInFlight = true;
   if (!quiet) setBusy((opts && opts.busyText) || 'Starte…');
-  api('startSession').then(r => {
+  api('startSession', force ? { force: '1' } : undefined).then(r => {
     startInFlight = false;
     if (r.ok) {
       busy = null;
       waitingUntil = 0;
+      verbindungUnklar = false;
       st = Object.assign({}, st || {}, {
         ok: true, phase: 'playing', message: r.message, isPlaying: true, isPaused: false,
         sessionActive: true, current: r.current, queueAhead: r.queueAhead,
         device: r.device, lastError: null
       });
-      progressBase = 0; progressAt = Date.now();
+      // Uebernommene Wiedergabe laeuft mitten im Song - der Fortschritt kommt
+      // dann vom naechsten Status, nicht von 0.
+      if (r.uebernommen) { progressBase = null; progressAt = 0; }
+      else { progressBase = 0; progressAt = Date.now(); }
       renderCurrent(r.current);
       render();
       tick();
       refresh();
-    } else if (r.code === 'BAD_RESPONSE') {
+    } else if (r.code === 'BAD_RESPONSE' || r.code === 'TIMEOUT' || r.code === 'NETWORK') {
       if (quiet) { scheduleNext(); return; }   // im Wartezustand einfach weiterprobieren
       // Kann trotzdem geklappt haben - nachsehen statt etwas zu behaupten.
+      // Belegt im Protokoll: ein "pause" brauchte 10,3 s und war erfolgreich,
+      // waehrend das Zeitlimit der App bei 12 s liegt. Ein abgelaufener Aufruf
+      // ist also keine Aussage darueber, ob der Server ihn ausgefuehrt hat.
       setBusy('Antwort unklar – prüfe, ob es läuft…');
       setTimeout(() => { busy = null; refresh(); }, 2500);
       setTimeout(refresh, 9000);
@@ -1278,6 +1310,9 @@ btnPower.addEventListener('click', () => {
     return;
   }
   if (isWaiting()) { waitingUntil = 0; render(); scheduleNext(); return; }
+  // Stand unklar: erst nachsehen, was Spotify wirklich macht. Blind zu starten
+  // hat hier die laufende Musik ersetzt.
+  if (!st || verbindungUnklar) { setBusy('Prüfe…'); refresh().then(() => { busy = null; render(); }); return; }
   const phase = st && st.ok ? st.phase : 'idle';
   if (phase === 'playing') {
     setBusy('Pausiere…');
