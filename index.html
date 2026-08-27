@@ -139,7 +139,14 @@ body {
   font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
   cursor: pointer; -webkit-tap-highlight-color: transparent; padding: 4px 0;
 }
-.pill-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+/* Die Leiste darf seitlich scrollen, aber der Scrollbalken darf keine Hoehe
+   kosten - mit dem dritten Sender kam er dazu und hat die Seite ueber den
+   Bildschirmrand geschoben. */
+.pill-row {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.pill-row::-webkit-scrollbar { display: none; }
 .pill {
   flex-shrink: 0; padding: 7px 13px; border-radius: 18px; border: 1.5px solid #444;
   background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
@@ -300,6 +307,24 @@ const btnUpdate = $('btnUpdate'), seekRow = $('seekRow'), feedbackRow = $('feedb
 const btnBack5 = $('btnBack5'), btnFwd10 = $('btnFwd10');
 
 const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3', 'spoon': 'Spoon Rock' };
+
+// Auf welchem Geraet laeuft die App gerade? Der User-Agent hilft nicht mehr
+// (Chrome meldet seit der UA-Reduktion pauschal "Android 10; K", siehe
+// Protokoll), die Client Hints liefern das Modell aber weiterhin - z.B.
+// "Pixel 8". Spotify benennt seine Connect-Geraete meist genauso, damit laesst
+// sich Pixel von Mi 9T unterscheiden. Reiner Hinweis: klappt es nicht, bleibt
+// es bei der Rangfolge im Backend.
+let geraeteHinweis = '';
+try {
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(['model']).then(d => {
+      geraeteHinweis = (d && d.model) ? String(d.model).slice(0, 40) : '';
+      logEvent('geraet_erkannt', geraeteHinweis || '(leer)');
+    }).catch(() => logEvent('geraet_erkannt', '(fehlgeschlagen)'));
+  } else {
+    logEvent('geraet_erkannt', '(nicht unterstuetzt)');
+  }
+} catch (e) { /* ohne Hinweis laeuft es normal weiter */ }
 
 let st = null;              // letzte Server-Antwort
 let currentKey = null;
@@ -1019,7 +1044,10 @@ function doStart(opts) {
   if (startInFlight) return;      // kein Doppelstart durch ueberlappende Versuche
   startInFlight = true;
   if (!quiet) setBusy((opts && opts.busyText) || 'Starte…');
-  api('startSession', force ? { force: '1' } : undefined).then(r => {
+  const params = {};
+  if (force) params.force = '1';
+  if (geraeteHinweis) params.hint = geraeteHinweis;
+  api('startSession', Object.keys(params).length ? params : undefined).then(r => {
     startInFlight = false;
     if (r.ok) {
       busy = null;
