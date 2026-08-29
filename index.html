@@ -595,15 +595,17 @@ function renderStations(list) {
   stationSig = sig;
 
   stationRow.innerHTML = '';
-  const activeIds = list.filter(s => s.active).map(s => s.id);
   list.forEach(s => {
     const b = document.createElement('button');
     b.className = 'pill' + (s.active ? ' active' : '');
     b.textContent = s.label;
     b.addEventListener('click', () => {
-      logEvent('knopf', 'sender', { getippt: s.label, neuerZustand: s.active ? 'aus' : 'an' });
-      const next = s.active ? activeIds.filter(id => id !== s.id) : activeIds.concat(s.id);
-      api('setStations', { stations: next.join(',') }).then(r => {
+      // Genau eine Auswahl: ein Sender oder Mix. Ein Tipp auf die bereits
+      // aktive Kachel waere frueher ein Abwaehlen gewesen - jetzt gibt es
+      // keinen Zustand "gar kein Sender" mehr, also passiert nichts.
+      if (s.active) return;
+      logEvent('knopf', 'sender', { getippt: s.label });
+      api('setStations', { mode: s.id }).then(r => {
         if (!r.ok) return;
         stationSig = ''; renderStations(r.stations);
         // Laeuft gerade Musik, wird die Liste zum Songende getauscht - sonst
