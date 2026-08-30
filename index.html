@@ -129,20 +129,6 @@ body {
 
 /* Beschriftung neben der Zeile statt darueber - spart rund 30px Hoehe,
    die auf kurzen Displays am unteren Rand gefehlt haben. */
-.ctl-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.ctl-key {
-  flex: 0 0 46px; font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
-  text-transform: uppercase; color: #555;
-}
-.ctl-val {
-  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 700; color: #999;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ctl-line > button.link {
-  flex: 0 0 auto; background: none; border: none; color: #777; font-family: inherit;
-  font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
-  cursor: pointer; -webkit-tap-highlight-color: transparent; padding: 4px 0;
-}
 /* Die Leiste darf seitlich scrollen, aber der Scrollbalken darf keine Hoehe
    kosten - mit dem dritten Sender kam er dazu und hat die Seite ueber den
    Bildschirmrand geschoben. */
@@ -267,10 +253,9 @@ body {
     <button class="btn-extra" id="btnUpdate">🗞 Update</button>
   </div>
 
-  <div class="ctl-line">
-    <span class="ctl-key">Sender</span>
-    <div class="pill-row" id="stationRow"></div>
-  </div>
+  <!-- Ohne Beschriftung "SENDER": die kostete 56px, und die Kacheln
+       brauchten auf einem 329px-Display 283px bei nur 241px Platz. -->
+  <div class="pill-row" id="stationRow"></div>
 
   <div class="power-row">
     <button class="btn-power start" id="btnPower">▶ Start</button>
