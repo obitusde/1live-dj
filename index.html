@@ -1498,7 +1498,8 @@ function applyStatus(data, gesamtMs) {
           schonGespielt: data.current.playCount,
           dauerMs: data.current.durationMs,
           nochInListe: data.queueAhead,
-          fremd: !data.current.key
+          // null = Direktbetrieb, Server kennt den Song noch nicht (nicht "fremd")
+          fremd: data.current.metaPending ? null : !data.current.key
         });
         // Reaktives Netz nur kurz nach dem Songwechsel. Am 21.08. loeste es 8 s
         // nach Songbeginn aus und der Song war danach weg - inzwischen setzt
