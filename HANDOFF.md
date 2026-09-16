@@ -85,6 +85,15 @@ nicht per Code im Skript behebbar. Deshalb:
    Endpunkt `action=verifyUris` prüft das ganze Sheet auf einen Schlag
    (beim letzten Lauf: 179 geprüft, 0 falsch).
 
+## Beiträge nur bei offener App (Entscheidung 17.09.2026)
+Android friert die PWA ~30–60 s nach dem Wegwechseln komplett ein (Log
+16.09., 23:31 und 23:42: danach keinerlei Abrufe mehr). Beiträge laufen
+deshalb nur, solange die App im Vordergrund ist (Wake Lock hält den
+Bildschirm an). Geprüfte Alternative – Podcast-Folgen als spotify:episode in
+den Spotify-Kontext legen (läuft auch im Hintergrund) – vom Nutzer bewusst
+nicht gewählt; offen war dabei, ob Spotify das für Apps im Development Mode
+zulässt. Stummer Dauerton zum Wachhalten verworfen (würde Spotify pausieren).
+
 ## Bekannte, nicht code-behebbare Einschränkung
 Spotifys eigene Wiedergabe-Warteschlange (User Queue) lässt sich über die
 Web-API nicht leeren – nur per manuellem „Leeren" in der Spotify-App. Reste
