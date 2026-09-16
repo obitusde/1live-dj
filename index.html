@@ -1286,6 +1286,7 @@ function tick() {
   // Im Wartezustand laeuft hier nur der Countdown weiter.
   if (isWaiting() && !(st && st.ok && st.isPlaying)) { renderWaiting(); return; } // Fortschritt kommt waehrend einer Einspielung vom Audio-Element selbst (siehe startInterjection)
   if (aktuellesOn && !aktuellesNextItem) prefetchNextAktuelles();
+  vorladenNaechsterBeitrag();
   if (!st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null ||
       !progressAt || Date.now() - progressAt > TRIGGER_STALE_MS) {
     progressWrap.classList.add('hidden');
@@ -1726,9 +1727,93 @@ function rollInterjectionThreshold() {
 // Nur wenn wirklich eine Session laeuft ausloesen - sonst wuerde playerResume
 // nachher unter Umstaenden ungefragt Musik starten, obwohl der Nutzer die
 // DJ-Session gar nicht aktiv hat.
+// ── Beitraege im Hintergrund ermoeglichen ───────────────────
+// Chrome laedt Audio einer Seite im Hintergrund erst, wenn sie wieder sichtbar
+// wird - AUSSER die Seite hat schon einmal Audio abgespielt. Belegt am 16.09.
+// um 23:22: Songende im Hintergrund erkannt, Spotify pausiert, der Beitrag lief
+// aber nie an ("start_blockiert"). Deshalb zwei Vorkehrungen:
+//   1. einmal pro Sitzung einen halbsekuendigen stummen Ton abspielen
+//      ("Freischalten"), am besten beim Tippen auf einen Knopf;
+//   2. den naechsten Beitrag schon im Vordergrund vorladen.
+// Und im Hintergrund wird Spotify nur noch angehalten, wenn der Beitrag
+// wirklich abspielbereit ist - sonst laeuft die Musik weiter.
+let mediaFreigegeben = false;
+let mediaFreigabeLaeuft = false;
+let verschobenFuerUri = null;
+
+function stummerTonUrl() {
+  const sr = 8000, n = sr / 2, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+  w(36, 'data'); v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function medienFreischalten(anlass) {
+  if (mediaFreigegeben || mediaFreigabeLaeuft || interjectionActive || document.hidden) return;
+  mediaFreigabeLaeuft = true;
+  try {
+    const url = stummerTonUrl();
+    const a = new Audio(url);
+    a.play().then(() => {
+      mediaFreigegeben = true;
+      logEvent('audio_freigabe', 'ok', { anlass: anlass });
+      setTimeout(() => { try { a.pause(); URL.revokeObjectURL(url); } catch (e) {} }, 700);
+    }).catch(e => {
+      logEvent('audio_freigabe', 'abgelehnt', { anlass: anlass, grund: e && e.name });
+    }).finally(() => { mediaFreigabeLaeuft = false; });
+  } catch (e) { mediaFreigabeLaeuft = false; }
+}
+
+// Tipps sind "Nutzeraktionen" - dann laesst Chrome das Abspielen sicher zu.
+// Bewusst in der Bubble-Phase: der Knopf-Handler (z.B. "Aktuelles an") ist
+// dann schon gelaufen, interjectionFeatureOn() also bereits wahr.
+document.addEventListener('click', () => {
+  if (interjectionFeatureOn()) medienFreischalten('tipp');
+});
+
+function naechsterBeitrag() {
+  if (pendingNews) return pendingNews;
+  if (updateQueue.length) return updateQueue[0];
+  return aktuellesOn ? aktuellesNextItem : null;
+}
+
+function vorladenNaechsterBeitrag() {
+  if (interjectionActive || document.hidden) return;
+  const item = naechsterBeitrag();
+  if (!item || !item.url || newsAudio.dataset.item === item.url) return;
+  newsAudio.preload = 'auto';
+  newsAudio.src = item.url;
+  newsAudio.dataset.item = item.url;
+  try { newsAudio.load(); } catch (e) {}
+}
+
+function beitragBereit(item) {
+  // HAVE_FUTURE_DATA: genug gepuffert, um sofort loszuspielen
+  return !!item && newsAudio.dataset.item === item.url && newsAudio.readyState >= 3;
+}
+
 function maybeTriggerInterjection() {
   if (interjectionActive || busy) return;
   if (!st || !st.ok || !st.sessionActive) return;
+
+  if (document.hidden) {
+    const kandidat = naechsterBeitrag();
+    if (kandidat && !beitragBereit(kandidat)) {
+      const uri = st.current ? st.current.uri : null;
+      if (verschobenFuerUri !== uri) {
+        verschobenFuerUri = uri;
+        logEvent('beitrag_verschoben', 'App im Hintergrund, Beitrag nicht bereit', {
+          vorgeladen: newsAudio.dataset.item === kandidat.url,
+          readyState: newsAudio.readyState, freigegeben: mediaFreigegeben
+        });
+      }
+      return;
+    }
+  }
 
   if (pendingNews) {
     const item = pendingNews;
@@ -1839,7 +1924,14 @@ async function startInterjection(item, kind) {
     } catch (e) { /* nicht kritisch */ }
   }
 
-  newsAudio.src = item.url;
+  const warVorgeladen = newsAudio.dataset.item === item.url;
+  logEvent('beitrag_audio', warVorgeladen ? 'vorgeladen' : 'frisch', {
+    readyState: warVorgeladen ? newsAudio.readyState : 0, freigegeben: mediaFreigegeben, hintergrund: document.hidden
+  });
+  if (!warVorgeladen) {
+    newsAudio.src = item.url;
+    newsAudio.dataset.item = item.url;
+  }
   progressWrap.classList.remove('hidden');
   progressFill.style.width = '0%';
   tElapsed.textContent = '0:00';
@@ -1899,6 +1991,7 @@ async function startInterjection(item, kind) {
   newsAudio.onended = null; newsAudio.onerror = null; newsAudio.ontimeupdate = null;
   newsAudio.pause();
   newsAudio.removeAttribute('src');
+  delete newsAudio.dataset.item;
   newsAudio.load();
   progressWrap.classList.add('hidden');
   interjectionActive = null;
@@ -2198,6 +2291,9 @@ render();
 // holen - dann laeuft schon der allererste Abruf direkt.
 spHandleRedirect().catch(() => {}).then(() => {
   logEvent('spotify_direkt', spConnected() ? 'aktiv' : 'aus', { redirect: SP_REDIRECT });
+  // Installierte Apps duerfen oft auch ohne Tipp Audio abspielen - dann ist
+  // die Freigabe schon beim Oeffnen erledigt. Sonst klappt es beim ersten Tipp.
+  if (interjectionFeatureOn()) medienFreischalten('app_start');
   render();
   refresh();
 });
