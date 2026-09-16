@@ -18,7 +18,31 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 - `clasp run` funktioniert nicht (Skript ist nicht als API-Executable
   deployt) – Diagnose läuft über eigene `action=`-Endpunkte im Backend.
 
-## Was heute gemacht wurde (in dieser Reihenfolge)
+## Stand 16.09.2026 – Tempo und Stabilität (Backend @100)
+Messung: Das Skript beantwortet `status` in 0,4–0,8 s, Googles Web-App-Schicht
+davor braucht aber 1–40 s (ein Drittel der Abrufe lief ins 12-s-Limit). Das ist
+nicht per Code im Skript behebbar. Deshalb:
+- **Spotify-Direktverbindung (PKCE)** im Frontend: Status, Pause, Weiter, Skip,
+  Dislike-Skip und Pause/Fortsetzen rund um Beiträge gehen direkt an Spotify.
+  Apps Script bleibt für Start (Songauswahl), Bewertung, Vorrat und Protokoll.
+  Ohne Verbindung oder bei Störung läuft alles automatisch über den Server.
+  Voraussetzung: Redirect URI `https://obitusde.github.io/1live-dj/` im
+  Spotify-Dashboard eingetragen und einmal „Spotify verbinden" in der App.
+- **Doppelt fragen**: Lese-Abrufe (status, stations, updateEpisodes,
+  latestNews, spotifyClientId) schicken nach 4 s ohne Antwort eine zweite
+  Anfrage. Nie für Start/Skip/Bewertung.
+- **Beiträge**: Bildschirm bleibt an (Wake Lock), solange Session läuft und
+  Aktuelles/Update/News aktiv sind; Aktuelles-Vorladen wiederholt sich bei
+  Fehlern; Auslösen auch bei kurzzeitig veraltetem Stand; reaktives Fenster
+  größer; hängt ein Beitrag beim Start, geht die Musik weiter statt Stille.
+- **Wartezustand**: prüft Geräte direkt, startet nicht mehr mehrfach.
+- **Backend**: Script Properties gebündelt gelesen (kurze Aufrufe),
+  Trigger-Prüfung nur noch alle 6 h, Start holt Player+Geräte parallel,
+  neuer Endpunkt `action=spotifyClientId`, `dislike&noskip=1`.
+- Protokoll lesen: `?action=logTail&n=300&event=api,sp...` bzw.
+  `?action=logStats&hours=24` (Direktabrufe erscheinen als `api:sp:*`).
+
+## Was am 18.–30.08. gemacht wurde (in dieser Reihenfolge)
 1. **Kompletter Umbau der Spotify-DJ-Engine** (`Queue.js`, `Spotify.js`,
    `Code.js`): Start ist jetzt synchron (~4 s statt bis zu 90 s blindem
    Warten), spielt nur noch fertig aufgelöste Songs aus einem

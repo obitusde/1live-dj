@@ -10,6 +10,11 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
+  // Fremde Adressen (Apps Script, Spotify-API und -Anmeldung) gar nicht erst
+  // anfassen: der Umweg ueber den Worker kostete bei jedem Status-Abruf Zeit
+  // und machte aus einem echten Netzfehler eine kuenstliche 503-Antwort.
+  if (new URL(event.request.url).origin !== self.location.origin) return;
+
   // Fuer die Seite selbst (HTML/JS) den HTTP-Cache umgehen - GitHub Pages
   // setzt Cache-Control: max-age=600, das PWA-Chrome hielt dadurch bis zu
   // 10 Minuten lang eine veraltete Version fest (App-Updates kamen auf dem

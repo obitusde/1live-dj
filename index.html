@@ -460,23 +460,40 @@ let apiLatency = 2500;
 // Ein frueher Abbruch ist inzwischen harmlos: der Start uebernimmt laufende
 // Wiedergabe (adoptRunningPlayback_), statt sie zu ersetzen.
 const API_TIMEOUT_MS = 12000;
+// Der Start darf laenger: er laeuft serverseitig ohnehin weiter, und ein
+// Abbruch nach 12 s loeste bisher nur Wiederholungen aus, die dann am
+// Server-Lock warteten (15.09., 11:21-11:23).
+const API_TIMEOUT_START_MS = 20000;
 
-function api(action, params) {
-  const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() }, params || {}));
+// ── Doppelt fragen statt lange warten ────────────────────────
+// Gemessen am 16.09.: das Skript selbst antwortet in 0,4-0,8 s, Googles
+// Web-App-Schicht davor braucht aber mal 1 s, mal 30 s - scheinbar zufaellig
+// pro Anfrage. Ein Drittel aller Status-Abrufe lief dadurch ins Zeitlimit.
+// Kommt nach HEDGE_AFTER_MS keine Antwort, geht deshalb eine zweite, gleiche
+// Anfrage los; die erste brauchbare Antwort gewinnt. Nur fuer Abrufe, die
+// nichts veraendern - ein doppelter Start oder Skip waere fatal.
+const HEDGE_AFTER_MS = 4000;
+const HEDGE_ACTIONS = ['status', 'stations', 'updateEpisodes', 'latestNews', 'spotifyClientId'];
+const TRANSPORT_CODES = ['TIMEOUT', 'NETWORK', 'BAD_RESPONSE'];
+
+function apiOnce(action, params) {
+  const qs = new URLSearchParams(Object.assign({ action: action, _t: Date.now() + '' + Math.random().toString(36).slice(2, 5) }, params || {}));
   const t0 = Date.now();
   // Ohne Zeitlimit konnte eine haengende Anfrage (typisch beim Wechsel
   // WLAN<->Mobilfunk) die komplette Abfrageschleife lahmlegen: der naechste
   // Abruf wird erst im .then() geplant, also nie. Die Anzeige blieb dann
   // minutenlang stehen. Jetzt bricht sie ab und der Aufrufer plant weiter.
   const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const killer = ctrl ? setTimeout(() => ctrl.abort(), API_TIMEOUT_MS) : null;
+  const limit = action === 'startSession' ? API_TIMEOUT_START_MS : API_TIMEOUT_MS;
+  const killer = ctrl ? setTimeout(() => ctrl.abort(), limit) : null;
 
   return fetch(WEBAPP_URL + '?' + qs.toString(),
                ctrl ? { cache: 'no-store', signal: ctrl.signal } : { cache: 'no-store' })
     .then(r => r.text().then(text => {
-      apiLatency = Math.round(apiLatency * 0.7 + (Date.now() - t0) * 0.3);
       try {
-        return JSON.parse(text);
+        const data = JSON.parse(text);
+        apiLatency = Math.round(apiLatency * 0.7 + (Date.now() - t0) * 0.3);
+        return data;
       } catch (e) {
         lastBadResponse = { at: Date.now(), action: action, status: r.status, snippet: text.slice(0, 100) };
         return { ok: false, code: 'BAD_RESPONSE',
@@ -494,9 +511,347 @@ function api(action, params) {
     }))
     .then(res => {
       if (killer) clearTimeout(killer);
-      logEvent('api', action, res && res.ok === false ? (res.code || 'fehler') : 'ok', Date.now() - t0);
       return res;
     });
+}
+
+function api(action, params) {
+  const t0 = Date.now();
+  const hedge = HEDGE_ACTIONS.indexOf(action) !== -1;
+  return new Promise(resolve => {
+    let done = false, laufend = 0, hedged = false, letzterFehler = null;
+    let hedgeTimer = null;
+
+    const finish = (res, nr) => {
+      if (done) return;
+      done = true;
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      logEvent('api', action, res && res.ok === false ? (res.code || 'fehler') : 'ok', Date.now() - t0);
+      if (hedged) logEvent('api_doppelt', action, { gewinner: nr, ergebnis: res && res.ok === false ? res.code : 'ok' });
+      resolve(res);
+    };
+    const launch = nr => {
+      laufend++;
+      apiOnce(action, params).then(res => {
+        laufend--;
+        const transport = res && res.ok === false && TRANSPORT_CODES.indexOf(res.code) !== -1;
+        if (!transport) { finish(res, nr); return; }
+        letzterFehler = res;
+        // Transportfehler: sofort die Zweitanfrage schicken statt die
+        // Wartezeit abzusitzen, oder auf die noch laufende andere warten.
+        if (hedge && !hedged) { startHedge(); return; }
+        if (laufend === 0) finish(letzterFehler, nr);
+      });
+    };
+    const startHedge = () => {
+      if (hedged || done) return;
+      hedged = true;
+      launch(2);
+    };
+
+    launch(1);
+    if (hedge) hedgeTimer = setTimeout(startHedge, HEDGE_AFTER_MS);
+  });
+}
+
+// ── Direktverbindung zu Spotify ──────────────────────────────
+// Status, Pause, Weiter und Skip gehen direkt an Spotify (~0,3 s) statt ueber
+// Apps Script (2-30 s, siehe oben). Apps Script bleibt fuer alles, was das
+// Sheet braucht: Start (Songauswahl), Bewertungen, Vorrat, Protokoll.
+// Anmeldung per PKCE: ohne Client Secret, nur mit der oeffentlichen Client ID.
+// Ist nichts verbunden oder streikt die Verbindung, laeuft alles wie bisher
+// ueber Apps Script - die App funktioniert also auch ohne diesen Teil.
+const SP_SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing';
+// Muss exakt so im Spotify-Dashboard als Redirect URI eingetragen sein.
+const SP_REDIRECT = location.origin + location.pathname.replace(/index\.html$/, '');
+const SP_TIMEOUT_MS = 6000;
+// So oft holt die App im Direktbetrieb die Server-Sicht (Songherkunft,
+// Session, Vorrat, Fehler). Bei Songwechsel sofort, sonst hoechstens so selten.
+const SRV_META_MS = 60000;
+
+let spAuth = spLoad();
+let spDeviceId = null;       // Geraet der letzten Wiedergabe - Ziel fuer Befehle
+let spLatency = 500;         // gleitender Mittelwert der Direktbefehle
+let spBackoffUntil = 0;      // nach 429/Stoerung eine Weile den alten Weg nehmen
+let spFailStreak = 0;
+let spNotice = null;         // Hinweis fuer die Detailansicht (z.B. Anmeldung abgebrochen)
+let spPollCount = 0;
+let lastSpState = null;      // letzter Rohstand von /me/player
+let lastDirectOkAt = 0;
+let srv = null;              // letzte Server-Antwort auf action=status
+let srvAt = 0;
+let srvInFlight = null;
+let srvLastTry = 0;
+
+function spLoad() {
+  try { return JSON.parse(localStorage.getItem('spDirect') || 'null'); } catch (e) { return null; }
+}
+function spSave(tok, clientId) {
+  spAuth = {
+    access: tok.access_token,
+    // PKCE-Refresh-Tokens werden bei jeder Erneuerung ausgetauscht - fehlt
+    // ausnahmsweise ein neuer, bleibt der alte gueltig.
+    refresh: tok.refresh_token || (spAuth && spAuth.refresh),
+    exp: Date.now() + Math.max(60, (tok.expires_in || 3600) - 120) * 1000,
+    clientId: clientId || (spAuth && spAuth.clientId)
+  };
+  try { localStorage.setItem('spDirect', JSON.stringify(spAuth)); } catch (e) { /* dann eben nur fuer diese Sitzung */ }
+}
+function spDisconnect(grund) {
+  spAuth = null;
+  try { localStorage.removeItem('spDirect'); } catch (e) {}
+  spNotice = grund || null;
+  logEvent('spotify_direkt', 'getrennt', grund || '');
+}
+function spConnected() { return !!(spAuth && spAuth.refresh && spAuth.clientId); }
+function spActive() { return spConnected() && Date.now() >= spBackoffUntil; }
+
+function b64url(buf) {
+  let s = '';
+  new Uint8Array(buf).forEach(b => { s += String.fromCharCode(b); });
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function spRandom(n) {
+  const a = new Uint8Array(n);
+  crypto.getRandomValues(a);
+  return b64url(a);
+}
+
+async function spLogin() {
+  logEvent('knopf', 'spotify_verbinden', { redirect: SP_REDIRECT });
+  setBusy('Verbinde mit Spotify…');
+  let clientId = null;
+  try { clientId = localStorage.getItem('spClientId'); } catch (e) {}
+  if (!clientId) {
+    const r = await api('spotifyClientId');
+    clientId = r && r.ok ? r.clientId : null;
+    if (clientId) { try { localStorage.setItem('spClientId', clientId); } catch (e) {} }
+  }
+  if (!clientId) {
+    busy = null;
+    spNotice = 'Client ID nicht abrufbar – gleich nochmal versuchen';
+    render();
+    return;
+  }
+  const verifier = spRandom(48);
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const state = spRandom(12);
+  localStorage.setItem('spPkce', JSON.stringify({ verifier: verifier, state: state, clientId: clientId, at: Date.now() }));
+  flushLog(true);
+  location.href = 'https://accounts.spotify.com/authorize?' + new URLSearchParams({
+    response_type: 'code', client_id: clientId, scope: SP_SCOPES, redirect_uri: SP_REDIRECT,
+    code_challenge_method: 'S256', code_challenge: challenge, state: state
+  }).toString();
+}
+
+// Rueckkehr von der Spotify-Anmeldung: ?code=... gegen Tokens tauschen.
+async function spHandleRedirect() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('code') && !q.has('error')) return;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  let pk = null;
+  try { pk = JSON.parse(localStorage.getItem('spPkce') || 'null'); localStorage.removeItem('spPkce'); } catch (e) {}
+  if (q.get('error')) {
+    spNotice = 'Spotify-Anmeldung abgebrochen (' + q.get('error') + ')';
+    logEvent('spotify_direkt', 'abgebrochen', q.get('error'));
+    return;
+  }
+  if (!pk || pk.state !== q.get('state')) {
+    spNotice = 'Spotify-Anmeldung passte nicht zusammen – bitte nochmal verbinden';
+    logEvent('spotify_direkt', 'state_falsch', '');
+    return;
+  }
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code: q.get('code'), redirect_uri: SP_REDIRECT,
+        client_id: pk.clientId, code_verifier: pk.verifier
+      })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.access_token) {
+      spNotice = 'Spotify-Anmeldung fehlgeschlagen: ' + (j.error_description || j.error || ('HTTP ' + r.status));
+      logEvent('spotify_direkt', 'token_fehler', spNotice);
+      return;
+    }
+    spSave(j, pk.clientId);
+    spNotice = null;
+    logEvent('spotify_direkt', 'verbunden', { scope: j.scope });
+  } catch (e) {
+    spNotice = 'Spotify-Anmeldung: keine Verbindung – nochmal versuchen';
+    logEvent('spotify_direkt', 'token_netz', e.message);
+  }
+}
+
+let spRefreshing = null;
+function spToken() {
+  if (!spConnected()) return Promise.reject(Object.assign(new Error('nicht verbunden'), { authLost: true }));
+  if (spAuth.access && Date.now() < spAuth.exp) return Promise.resolve(spAuth.access);
+  // Ein anderes Fenster (Browser statt installierter App) kann den Token schon
+  // erneuert haben - dessen Refresh-Token ist dann der einzig gueltige.
+  const aufPlatte = spLoad();
+  if (aufPlatte && aufPlatte.refresh && aufPlatte.exp > Date.now()) { spAuth = aufPlatte; return Promise.resolve(spAuth.access); }
+  if (aufPlatte && aufPlatte.refresh) spAuth = aufPlatte;
+  if (spRefreshing) return spRefreshing;
+  spRefreshing = fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: spAuth.refresh, client_id: spAuth.clientId })
+  }).then(r => r.json().catch(() => ({})).then(j => {
+    if (!r.ok || !j.access_token) {
+      if (r.status === 400 || r.status === 401) {
+        spDisconnect('Spotify-Anmeldung abgelaufen – bitte neu verbinden');
+        throw Object.assign(new Error('Spotify-Anmeldung abgelaufen'), { authLost: true });
+      }
+      throw new Error('Token-Erneuerung: HTTP ' + r.status);
+    }
+    spSave(j);
+    return spAuth.access;
+  })).finally(() => { spRefreshing = null; });
+  return spRefreshing;
+}
+
+// Liefert geparstes JSON, null bei leerer Antwort (204), wirft sonst mit .status.
+function sp(path, opts) {
+  opts = opts || {};
+  return spToken().then(token => {
+    const ctrl = new AbortController();
+    const killer = setTimeout(() => ctrl.abort(), opts.timeout || SP_TIMEOUT_MS);
+    const init = { method: opts.method || 'GET', headers: { Authorization: 'Bearer ' + token }, signal: ctrl.signal, cache: 'no-store' };
+    if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+    return fetch('https://api.spotify.com/v1' + path, init)
+      .finally(() => clearTimeout(killer))
+      .then(res => {
+        if (res.status === 401 && !opts._nochmal) {
+          spAuth.exp = 0;
+          return sp(path, Object.assign({}, opts, { _nochmal: true }));
+        }
+        return res.text().then(text => {
+          if (res.status >= 200 && res.status < 300) {
+            if (!text) return null;
+            try { return JSON.parse(text); } catch (e) { return null; }
+          }
+          let msg = text;
+          try { const j = JSON.parse(text); msg = (j.error && (j.error.message || j.error)) || text; } catch (e) {}
+          const err = new Error('Spotify ' + res.status + ': ' + String(msg).slice(0, 120));
+          err.status = res.status;
+          if (res.status === 429) err.retryAfter = parseInt(res.headers.get('Retry-After') || '30', 10) || 30;
+          throw err;
+        });
+      });
+  });
+}
+
+function spNoteLatency(ms) { spLatency = Math.round(spLatency * 0.7 + ms * 0.3); }
+
+// Befehl an das Wiedergabegeraet. 404 heisst bei Spotify "kein aktives
+// Geraet" - typisch nach einer laengeren Pause (z.B. waehrend einer
+// Update-Folge). Dann das Geraet per Transfer aufwecken und einmal wiederholen.
+function spCmd(label, path, method, body) {
+  const t0 = Date.now();
+  const mitGeraet = p => spDeviceId ? p + (p.indexOf('?') === -1 ? '?' : '&') + 'device_id=' + encodeURIComponent(spDeviceId) : p;
+  return sp(mitGeraet(path), { method: method, body: body })
+    .catch(err => {
+      if (err.status !== 404 || !spDeviceId) throw err;
+      return sp('/me/player', { method: 'PUT', body: { device_ids: [spDeviceId], play: false } })
+        .catch(() => null)
+        .then(() => new Promise(r => setTimeout(r, 900)))
+        .then(() => sp(mitGeraet(path), { method: method, body: body }));
+    })
+    .then(res => {
+      const ms = Date.now() - t0;
+      spNoteLatency(ms);
+      logEvent('api', 'sp:' + label, 'ok', ms);
+      return res;
+    }, err => {
+      logEvent('api', 'sp:' + label, err.status ? ('HTTP' + err.status) : 'NETWORK', Date.now() - t0);
+      throw err;
+    });
+}
+
+// Wie lange vor Songende der Pause-Befehl losgeschickt wird.
+function pauseLeadMs() {
+  const lat = spActive() ? spLatency : apiLatency;
+  return Math.min(4500, Math.max(600, lat + 600));
+}
+
+function interjectionFeatureOn() {
+  return aktuellesOn || updateQueue.length > 0 || !!pendingNews;
+}
+
+// Aus dem Spotify-Rohstand dieselbe Form bauen, die action=status liefert -
+// der Rest der App muss dann nicht wissen, woher der Stand kommt.
+function buildDirectStatus(state) {
+  const s = srv || {};
+  const item = state && state.item;
+  const isPlaying = !!(state && state.is_playing);
+  let current = null;
+  if (item) {
+    const artist = item.type === 'episode'
+      ? ((item.show && item.show.name) || '')
+      : (item.artists || []).map(a => a.name).join(', ');
+    const basis = { uri: item.uri, title: item.name, artist: artist, durationMs: item.duration_ms };
+    current = (s.current && s.current.uri === item.uri)
+      ? Object.assign({}, s.current, basis)
+      // Server hat den Songwechsel noch nicht gesehen: Herkunft unbekannt,
+      // NICHT "aus Spotifys Warteschlange" behaupten.
+      : Object.assign(basis, { key: null, metaPending: true });
+  }
+  const ours = !!(current && current.key);
+  const session = !!s.sessionActive || (isPlaying && ours);
+  const device = state && state.device ? state.device.name : null;
+  const vorausBekannt = !!(s.current && current && s.current.uri === current.uri);
+
+  let phase, message;
+  if (isPlaying) {
+    phase = 'playing';
+    message = 'Läuft' + (device ? ' · ' + device : '') +
+              (vorausBekannt ? ' · ' + (s.queueAhead || 0) + ' in der Warteschlange' : '');
+  } else if (session && item) {
+    phase = 'paused';
+    message = 'Pausiert' + (device ? ' · ' + device : '');
+  } else if (session) {
+    phase = 'stalled';
+    message = 'Wiedergabe steht – Start drücken';
+  } else {
+    phase = 'idle';
+    message = 'Gestoppt · ' + (s.poolFresh || 0) + ' neu, ' + (s.poolKnown || 0) + ' bekannt';
+  }
+
+  return {
+    ok: true, direct: true, phase: phase, message: message,
+    isPlaying: isPlaying, isPaused: !isPlaying && !!item, sessionActive: session,
+    current: current,
+    progressMs: (state && typeof state.progress_ms === 'number') ? state.progress_ms : null,
+    progressAgeMs: 0, serverMs: 0,
+    queueAhead: vorausBekannt ? (s.queueAhead || 0) : null,
+    device: device,
+    shuffle: state ? state.shuffle_state : null,
+    mode: s.mode, stations: s.stations, pool: s.pool,
+    poolFresh: s.poolFresh, poolKnown: s.poolKnown,
+    lastError: s.lastError, lastRefill: s.lastRefill
+  };
+}
+
+// Server-Sicht im Direktbetrieb nachziehen, ohne die Anzeige zu blockieren.
+function refreshServerMeta(force) {
+  if (srvInFlight) return srvInFlight;
+  if (!force && Date.now() - srvLastTry < 8000) return Promise.resolve();
+  srvLastTry = Date.now();
+  srvInFlight = api('status').then(data => {
+    srvInFlight = null;
+    if (!data || !data.ok) return;
+    srv = data;
+    srvAt = Date.now();
+    if (!spActive() || !st || !st.direct) return;
+    const merged = buildDirectStatus(lastSpState);
+    st = Object.assign({}, st, merged, { progressMs: st.progressMs });
+    if (!interjectionActive) { renderCurrent(st.current); renderStations(st.stations); }
+    render();
+  });
+  return srvInFlight;
 }
 
 // ── Anzeige ──────────────────────────────────────────────────
@@ -546,7 +901,9 @@ function renderCurrent(cur) {
       // Ohne Sheet-Key stammt der Song nicht von uns, sondern aus Spotifys
       // eigener Warteschlange (Reste frueherer Sitzungen). Dann sind auch
       // 👍/👎 wirkungslos - das soll man sehen, statt zu raten.
-      if (!cur.key) parts.push('aus Spotifys Warteschlange');
+      // metaPending: Direktbetrieb, der Server hat den neuen Song noch nicht
+      // gesehen - dann lieber gar nichts sagen als etwas Falsches.
+      if (!cur.key && !cur.metaPending) parts.push('aus Spotifys Warteschlange');
       if (cur.station) parts.push(STATION_LABELS[cur.station] || cur.station);
       if (cur.playCount) parts.push(cur.playCount + '× gespielt');
       npMeta.textContent = parts.join(' · ');
@@ -610,7 +967,25 @@ function renderAlert() {
   // Stunden ist kein aktueller Zustand, sondern nur Rauschen. Steht die App
   // gerade wirklich im Problemzustand, zeigen wir ihn unabhaengig vom Alter.
   const err = (st.lastError && Date.now() - st.lastError.at < 15 * 60 * 1000) ? st.lastError : null;
-  if (!trouble && !(err && st.phase !== 'playing')) { alertBox.classList.add('hidden'); return; }
+  if (!trouble && !(err && st.phase !== 'playing')) {
+    // Einmaliger Hinweis, solange die Direktverbindung fehlt - ohne sie bleibt
+    // die App auf dem langsamen Weg ueber Google.
+    let hintWeg = false;
+    try { hintWeg = localStorage.getItem('spHintWeg') === '1'; } catch (e) {}
+    if (!spConnected() && (!hintWeg || spNotice) && !isWaiting()) {
+      alertBox.innerHTML = '<div>' + escapeHtml(spNotice || 'Schneller: Spotify direkt mit der App verbinden (einmalig).') + '</div>' +
+        '<div class="act"><button id="btnSpConnect">Spotify verbinden</button><button id="btnSpLater">Später</button></div>';
+      alertBox.classList.remove('hidden');
+      $('btnSpConnect').addEventListener('click', spLogin);
+      $('btnSpLater').addEventListener('click', () => {
+        try { localStorage.setItem('spHintWeg', '1'); } catch (e) {}
+        alertBox.classList.add('hidden');
+      });
+      return;
+    }
+    alertBox.classList.add('hidden');
+    return;
+  }
 
   // Im Wartezustand steht die Erklaerung schon gross im Hauptbereich - hier
   // dann nur noch die Knoepfe, statt denselben Satz doppelt zu zeigen (spart
@@ -646,11 +1021,19 @@ function renderDetails() {
          ' · ' + (st.lastRefill.found || 0) + ' von ' + (st.lastRefill.resolved || 0) +
          ' gefunden, ' + (st.lastRefill.added || 0) + ' neu<br><br>';
   }
+  h += '<b>Spotify-Direktverbindung</b><br>' +
+       (spConnected()
+         ? (spActive() ? 'aktiv' : 'gestört – nutze vorübergehend den Server') + ' · ' + spLatency + ' ms' +
+           ' <button id="btnSpDisconnect" style="margin-left:6px">Trennen</button>'
+         : 'nicht verbunden <button id="btnSpConnect2" style="margin-left:6px">Verbinden</button>') +
+       (spNotice ? '<br><span style="color:#ffb300">' + escapeHtml(spNotice) + '</span>' : '') + '<br><br>';
   h += '<b>Wiedergabe</b><br>Gerät: ' + escapeHtml(st.device || '–') +
-       '<br>Warteschlange: ' + (st.queueAhead || 0) +
+       '<br>Warteschlange: ' + (st.queueAhead === null || st.queueAhead === undefined ? '…' : st.queueAhead) +
        '<br>Session: ' + (st.sessionActive ? 'aktiv' : 'aus') +
-       '<br>Antwortzeit: ' + (apiLatency / 1000).toFixed(1) + ' s' +
-       ' (Vorlauf ' + (Math.min(3500, Math.max(300, apiLatency - 1000)) / 1000).toFixed(1) + ' s)' +
+       '<br>Stand von: ' + (st.direct ? 'Spotify direkt' : 'Server') +
+       '<br>Server-Antwortzeit: ' + (apiLatency / 1000).toFixed(1) + ' s' +
+       ' (Vorlauf ' + (pauseLeadMs() / 1000).toFixed(1) + ' s)' +
+       (wakeLock ? '<br>Bildschirm bleibt an (für Beiträge)' : '') +
        (isWaiting() ? '<br>Warte auf Gerät: noch ' + fmt(waitingUntil - Date.now()) : '') +
        (updateQueue.length ? '<br>Update-Folgen offen: ' + updateQueue.length : '') + '<br>';
   h += '<br><b>Protokoll</b><br>Sitzung: ' + escapeHtml(logSession) +
@@ -666,6 +1049,15 @@ function renderDetails() {
          escapeHtml(st.lastError.where) + ']<br>' + escapeHtml(st.lastError.message);
   }
   detailsBox.innerHTML = h;
+  const bc = $('btnSpConnect2');
+  if (bc) bc.addEventListener('click', e => { e.stopPropagation(); spLogin(); });
+  const bd = $('btnSpDisconnect');
+  if (bd) bd.addEventListener('click', e => {
+    e.stopPropagation();
+    spDisconnect('von Hand getrennt');
+    renderDetails();
+    refresh();
+  });
 }
 
 function escapeHtml(s) {
@@ -834,6 +1226,44 @@ function render() {
 
   renderAlert();
   renderDetails();
+  syncWakeLock();
+}
+
+// ── Bildschirm anlassen, solange Beitraege kommen sollen ─────
+// Beitraege (Aktuelles/Update/News) spielt der Browser selbst. Geht der
+// Bildschirm aus, legt Android die App schlafen und das Songende wird nie
+// bemerkt - belegt im Protokoll: am 15.09. ab 11:40 anderthalb Stunden Musik
+// mit "Aktuelles an", aber kein einziger Beitrag. Deshalb den Bildschirm
+// anlassen, solange eine Session laeuft und Beitraege eingeschaltet sind.
+let wakeLock = null;
+let wakeLockBusy = false;
+let wakeLockFailedAt = 0;
+
+function wantWakeLock() {
+  if (document.hidden) return false;
+  if (interjectionActive) return true;
+  return !!(st && st.ok && st.sessionActive && st.isPlaying && interjectionFeatureOn());
+}
+
+function syncWakeLock() {
+  if (!('wakeLock' in navigator) || wakeLockBusy) return;
+  const want = wantWakeLock();
+  if (want && !wakeLock && Date.now() - wakeLockFailedAt > 60000) {
+    wakeLockBusy = true;
+    navigator.wakeLock.request('screen').then(lock => {
+      wakeLock = lock;
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      logEvent('bildschirm', 'bleibt an');
+    }).catch(e => {
+      wakeLockFailedAt = Date.now();
+      logEvent('bildschirm', 'nicht moeglich', e && e.message);
+    }).finally(() => { wakeLockBusy = false; });
+  } else if (!want && wakeLock) {
+    const lock = wakeLock;
+    wakeLock = null;
+    lock.release().catch(() => {});
+    logEvent('bildschirm', 'darf aus');
+  }
 }
 
 // ── Fortschritt lokal weiterzaehlen ──────────────────────────
@@ -845,28 +1275,40 @@ function isStale() {
   return !progressAt || (Date.now() - progressAt) > STALE_MS;
 }
 
+// Fuer das AUSLOESEN von Beitraegen darf der Stand aelter sein als fuer die
+// Anzeige: ein einzelner Abruf, der ins Zeitlimit laeuft, liess die Anzeige
+// bisher als veraltet gelten - und damit fiel genau am Songende die
+// Einspielung aus. Die Hochrechnung ist ueber eine Minute noch genau genug.
+const TRIGGER_STALE_MS = 60000;
+
 function tick() {
   if (interjectionActive) return;
   // Im Wartezustand laeuft hier nur der Countdown weiter.
   if (isWaiting() && !(st && st.ok && st.isPlaying)) { renderWaiting(); return; } // Fortschritt kommt waehrend einer Einspielung vom Audio-Element selbst (siehe startInterjection)
-  if (isStale() || !st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null) {
+  if (aktuellesOn && !aktuellesNextItem) prefetchNextAktuelles();
+  if (!st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null ||
+      !progressAt || Date.now() - progressAt > TRIGGER_STALE_MS) {
     progressWrap.classList.add('hidden');
     return;
   }
   const dur = st.current.durationMs;
   const pos = Math.min(dur, progressBase + (Date.now() - progressAt));
-  progressWrap.classList.remove('hidden');
-  progressFill.style.width = (100 * pos / dur).toFixed(1) + '%';
-  tElapsed.textContent = fmt(pos);
-  tTotal.textContent = fmt(dur);
+  if (isStale()) {
+    progressWrap.classList.add('hidden');
+  } else {
+    progressWrap.classList.remove('hidden');
+    progressFill.style.width = (100 * pos / dur).toFixed(1) + '%';
+    tElapsed.textContent = fmt(pos);
+    tTotal.textContent = fmt(dur);
+  }
 
-  // Der Pause-Befehl braucht 2-3 s bis er bei Spotify ankommt und schwankt
-  // dabei um gut eine Sekunde. Wir zielen jetzt bewusst knapp VOR das
-  // Songende: ein angeschnittener Ausklang faellt kaum auf, ein Fehlstart des
-  // naechsten Songs sehr wohl. Beide Faelle werden beim Fortsetzen sauber
-  // aufgeloest (siehe startInterjection), egal auf welcher Seite wir landen.
+  // Der Pause-Befehl braucht ueber den Server 2-3 s, direkt ~0,3 s, und
+  // schwankt dabei. Wir zielen bewusst knapp VOR das Songende: ein
+  // angeschnittener Ausklang faellt kaum auf, ein Fehlstart des naechsten
+  // Songs sehr wohl. Beide Faelle werden beim Fortsetzen sauber aufgeloest
+  // (siehe startInterjection), egal auf welcher Seite wir landen.
   const left = dur - pos;
-  const lead = Math.min(4500, Math.max(600, apiLatency + 600));
+  const lead = pauseLeadMs();
   if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri) {
     if (pendingStationSwitch) {
       // Vorrang vor Einspielungen: erst die Liste tauschen, Beitraege kommen
@@ -892,14 +1334,23 @@ function interjectionDue() {
 // ── Polling: gezielt zum Songende statt stur alle 20 s ───────
 function isWaiting() { return waitingUntil > Date.now(); }
 
+// Direktbetrieb: ein Abruf kostet ~0,3 s und kein Apps-Script-Kontingent,
+// also darf deutlich haeufiger nachgesehen werden - Aenderungen, die man in
+// der Spotify-App macht (Pause, Skip), sind so nach wenigen Sekunden sichtbar.
+const DIRECT_POLL_MS      = 5000;
+const DIRECT_IDLE_POLL_MS = 10000;
+
 function scheduleNext() {
   clearTimeout(pollTimer);
 
   // Im Hintergrund normalerweise gar nicht pollen (Akku, Kontingent) - im
   // Wartezustand aber schon, damit die Musik auch dann losgeht, wenn man in
-  // der Spotify-App bleibt. Android drosselt das evtl., der Abruf beim
-  // Zurueckwechseln greift dann trotzdem sofort.
-  if (document.hidden && !isWaiting()) return;
+  // der Spotify-App bleibt. Mit Direktverbindung ausserdem, solange Beitraege
+  // eingeschaltet sind: sonst merkt die App im Hintergrund nie ein Songende.
+  // Android drosselt das evtl., der Abruf beim Zurueckwechseln greift dann
+  // trotzdem sofort.
+  const hintergrundBeitraege = spActive() && interjectionFeatureOn() && st && st.ok && st.sessionActive;
+  if (document.hidden && !isWaiting() && !hintergrundBeitraege) return;
   if (isWaiting()) {
     pollTimer = setTimeout(() => {
       if (Date.now() > waitingUntil) { refresh(); return; }  // Fenster abgelaufen -> normal weiter
@@ -910,7 +1361,15 @@ function scheduleNext() {
 
   let delay = IDLE_POLL_MS;
 
-  if (st && st.ok) {
+  if (st && st.ok && st.direct) {
+    delay = DIRECT_IDLE_POLL_MS;
+    if (st.phase === 'playing' && st.current && st.current.durationMs && progressBase !== null) {
+      const left = st.current.durationMs - (progressBase + (Date.now() - progressAt));
+      delay = Math.min(DIRECT_POLL_MS, Math.max(800, left + 700));
+    } else if (st.phase === 'paused') {
+      delay = DIRECT_POLL_MS;
+    }
+  } else if (st && st.ok) {
     if (st.phase === 'playing' && st.current && st.current.durationMs && progressBase !== null) {
       const left = st.current.durationMs - (progressBase + (Date.now() - progressAt));
       delay = Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, left + 1500));
@@ -932,6 +1391,41 @@ function setSoftError(message, phase) {
 let lastPollAt = 0;
 
 function refresh(isRetry) {
+  return spActive() ? refreshDirect(isRetry) : refreshServer(isRetry);
+}
+
+function refreshDirect(isRetry) {
+  lastPollAt = Date.now();
+  const tAb = Date.now();
+  return sp('/me/player?additional_types=episode').then(state => {
+    const gesamtMs = Date.now() - tAb;
+    spFailStreak = 0;
+    lastDirectOkAt = Date.now();
+    // Nur jede sechste Abfrage protokollieren - reicht fuer die Auswertung
+    // der Antwortzeiten, ohne das Protokoll mit Polls zu fluten.
+    if (++spPollCount % 6 === 1) logEvent('api', 'sp:status', 'ok', gesamtMs);
+    lastSpState = state || null;
+    if (state && state.device && state.device.id) spDeviceId = state.device.id;
+
+    applyStatus(buildDirectStatus(state), gesamtMs);
+
+    // Server-Sicht nachziehen: bei unbekanntem Song sofort, sonst selten.
+    const uri = state && state.item ? state.item.uri : null;
+    const srvKenntSong = !uri || (srv && srv.current && srv.current.uri === uri);
+    if (!srv || !srvKenntSong || Date.now() - srvAt > SRV_META_MS) refreshServerMeta();
+  }, err => {
+    // Bewusst nur Fehler des Spotify-Abrufs hier - ein Fehler beim Verarbeiten
+    // darf nicht still auf den Server-Weg umschalten.
+    spFailStreak++;
+    logEvent('api', 'sp:status', err.status ? ('HTTP' + err.status) : (err.authLost ? 'ABGEMELDET' : 'NETWORK'), Date.now() - tAb);
+    if (err.status === 429) spBackoffUntil = Date.now() + (err.retryAfter || 30) * 1000;
+    else if (spFailStreak >= 3) spBackoffUntil = Date.now() + 60000;
+    // Dieser Abruf geht ueber den Server - die App bleibt also bedienbar.
+    return refreshServer(isRetry);
+  });
+}
+
+function refreshServer(isRetry) {
   lastPollAt = Date.now();
   const tAb = Date.now();
   return api('status').then(data => {
@@ -950,6 +1444,30 @@ function refresh(isRetry) {
       scheduleNext();
       return;
     }
+    srv = data;
+    srvAt = Date.now();
+    // Server-Antworten brauchen bis zu 30 s. Hat inzwischen ein Direktabruf
+    // einen frischeren Stand geliefert, nur die Server-Sicht uebernehmen und
+    // die Anzeige nicht auf den alten Stand zurueckwerfen.
+    if (spActive() && lastDirectOkAt > tAb) return;
+    applyStatus(data, gesamtMs);
+  }).catch(err => {
+    setSoftError('Keine Verbindung: ' + err.message, 'error');
+    scheduleNext();
+  });
+}
+
+// Reaktives Netz: so weit darf ein neuer Song schon laufen, damit der Beitrag
+// noch davor geschoben wird (der Song faengt danach wieder bei 0 an, siehe
+// startInterjection). Ueber den Server kommt ein Songwechsel spaeter an als
+// direkt, im Hintergrund wegen der Android-Drosselung noch viel spaeter.
+function reactiveWindowMs(direct) {
+  if (document.hidden) return 60000;
+  return direct ? 4000 : 8000;
+}
+
+function applyStatus(data, gesamtMs) {
+  {
     verbindungUnklar = false;
     st = data;
     if (data.ok) {
@@ -982,14 +1500,24 @@ function refresh(isRetry) {
           nochInListe: data.queueAhead,
           fremd: !data.current.key
         });
-        // Reaktives Netz nur unmittelbar nach dem Songwechsel. Mit 10 s war
-        // das Fenster zu weit: am 21.08. um 09:22 loeste es 8 s nach dem
-        // Songbeginn aus - man hoerte ein Songfragment, dann den Beitrag.
-        // Ist der Song schon weiter, wird nur gezaehlt und aufs naechste
-        // Songende gewartet (tick() uebernimmt das).
-        if ((data.progressMs || 0) < 3000 && interjectionDue()) maybeTriggerInterjection();
+        // Reaktives Netz nur kurz nach dem Songwechsel. Am 21.08. loeste es 8 s
+        // nach Songbeginn aus und der Song war danach weg - inzwischen setzt
+        // startInterjection ihn in dem Fall auf 0 zurueck, man hoert also nur
+        // einen kurzen Anriss. Das Fenster war mit 3 s aber so knapp, dass es
+        // bei 2-3 s Server-Antwortzeit meistens verpasst wurde und der Beitrag
+        // ein ganzes Lied spaeter (oder gar nicht) kam.
+        if ((data.progressMs || 0) < reactiveWindowMs(!!data.direct) && interjectionDue()) maybeTriggerInterjection();
       }
       lastSeenSongUri = newUri || lastSeenSongUri;
+
+      // Musik laeuft: Warten ist erledigt. Ohne das startete der Wartezustand
+      // weiter - am 15.09. um 08:00 neunmal hintereinander, weil die Antworten
+      // der erfolgreichen Starts im Zeitlimit haengen blieben.
+      if (waitingUntil && data.phase === 'playing') {
+        logEvent('warten_erledigt', 'Musik läuft', null, waitingSince ? Date.now() - waitingSince : undefined);
+        waitingUntil = 0;
+        waitingSince = 0;
+      }
 
       // Wartezustand: bei jedem Abruf waehrenddessen gleich einen Start
       // versuchen - ohne festes Zielgeraet gibt es kein "online"-Signal mehr
@@ -1013,10 +1541,7 @@ function refresh(isRetry) {
     render();
     tick();
     scheduleNext();
-  }).catch(err => {
-    setSoftError('Keine Verbindung: ' + err.message, 'error');
-    scheduleNext();
-  });
+  }
 }
 
 // ── Aktionen ─────────────────────────────────────────────────
@@ -1029,6 +1554,17 @@ let startInFlight = false;
 // force=true: laufende Wiedergabe bewusst ersetzen. Nur der Senderwechsel
 // braucht das - er soll die Liste ja gerade austauschen. Ohne force uebernimmt
 // der Server laufende Musik, statt ein anderes Lied zu starten.
+// Direktbetrieb: gibt es ueberhaupt ein Spotify-Geraet? Beantwortet Spotify in
+// ~0,3 s selbst - vorher kostete jede Wartezustands-Runde einen kompletten
+// Start-Aufruf ueber Apps Script (am 15.09. elf Stueck in zwei Minuten).
+// Liefert true/false, oder null wenn die Direktabfrage nicht klappt.
+function spHasDevice() {
+  if (!spActive()) return Promise.resolve(null);
+  return sp('/me/player/devices')
+    .then(d => ((d && d.devices) || []).length > 0)
+    .catch(() => null);
+}
+
 function doStart(opts) {
   const quiet = !!(opts && opts.quiet);
   const force = !!(opts && opts.force);
@@ -1038,16 +1574,29 @@ function doStart(opts) {
   const params = {};
   if (force) params.force = '1';
   if (geraeteHinweis) params.hint = geraeteHinweis;
-  api('startSession', Object.keys(params).length ? params : undefined).then(r => {
+
+  spHasDevice().then(hatGeraet => {
+    if (hatGeraet === false) {
+      return { ok: false, code: 'NO_DEVICE', message: 'Kein Spotify-Gerät erreichbar – Spotify auf dem Handy öffnen.', lokal: true };
+    }
+    return api('startSession', Object.keys(params).length ? params : undefined);
+  }).then(r => {
     startInFlight = false;
     if (r.ok) {
       busy = null;
+      if (waitingUntil) logEvent('warten_erledigt', 'gestartet', null, waitingSince ? Date.now() - waitingSince : undefined);
       waitingUntil = 0;
+      waitingSince = 0;
       verbindungUnklar = false;
       st = Object.assign({}, st || {}, {
         ok: true, phase: 'playing', message: r.message, isPlaying: true, isPaused: false,
         sessionActive: true, current: r.current, queueAhead: r.queueAhead,
         device: r.device, lastError: null
+      });
+      // Die Server-Sicht fuer den Direktbetrieb gleich mitnehmen - sonst
+      // stuende der erste Song bis zum naechsten Server-Abruf ohne Herkunft da.
+      srv = Object.assign({}, srv || {}, {
+        sessionActive: true, current: r.current, queueAhead: r.queueAhead, lastError: null
       });
       // Uebernommene Wiedergabe laeuft mitten im Song - der Fortschritt kommt
       // dann vom naechsten Status, nicht von 0.
@@ -1057,15 +1606,19 @@ function doStart(opts) {
       render();
       tick();
       refresh();
+      if (spActive()) setTimeout(() => refreshServerMeta(true), 3000);
     } else if (r.code === 'BAD_RESPONSE' || r.code === 'TIMEOUT' || r.code === 'NETWORK') {
-      if (quiet) { scheduleNext(); return; }   // im Wartezustand einfach weiterprobieren
+      // Im Wartezustand NICHT gleich den naechsten Start hinterherschicken:
+      // der hier kann serverseitig laengst erfolgreich gewesen sein. Erst
+      // nachsehen - refresh() startet selbst neu, falls wirklich nichts laeuft.
+      if (quiet) { clearTimeout(pollTimer); pollTimer = setTimeout(refresh, WAIT_POLL_MS); return; }
       // Kann trotzdem geklappt haben - nachsehen statt etwas zu behaupten.
       // Belegt im Protokoll: ein "pause" brauchte 10,3 s und war erfolgreich,
       // waehrend das Zeitlimit der App bei 12 s liegt. Ein abgelaufener Aufruf
       // ist also keine Aussage darueber, ob der Server ihn ausgefuehrt hat.
       setBusy('Antwort unklar – prüfe, ob es läuft…');
-      setTimeout(() => { busy = null; refresh(); }, 2500);
-      setTimeout(refresh, 9000);
+      setTimeout(() => { busy = null; refresh(); }, spActive() ? 800 : 2500);
+      setTimeout(refresh, spActive() ? 4000 : 9000);
     } else if (quiet) {
       // Geraet weiterhin nicht da - Wartezustand unveraendert weiterlaufen
       // lassen (nicht neu scharfschalten, sonst liefe das Fenster nie ab).
@@ -1081,7 +1634,7 @@ function doStart(opts) {
       // weiterprueferen und starten, sobald Spotify antwortet. Frueher musste
       // man dafuer erst den "Spotify öffnen"-Knopf benutzen.
       if (['DEVICE_GONE', 'NO_DEVICE', 'PLAY_FAILED'].indexOf(r.code) !== -1) {
-        if (!isWaiting()) { waitingSince = Date.now(); logEvent('warten_start', r.code, r.message); }
+        if (!isWaiting()) { waitingSince = Date.now(); logEvent('warten_start', r.code, { meldung: r.message, direktGeprueft: !!r.lokal }); }
         waitingUntil = Date.now() + WAIT_WINDOW_MS;
       }
       render();
@@ -1101,8 +1654,67 @@ function doStart(opts) {
 }
 
 // ── Nachrichten & Aktuelles: die eigentliche Einspielung ──────
+// Frueher genau EIN Versuch: scheiterte der (Median 5,7 s ueber Apps Script),
+// blieb "Aktuelles" fuer den Rest der Sitzung stumm - interjectionDue()
+// braucht ein vorgeladenes Item. Jetzt mit Wiederholung und wachsendem
+// Abstand; tick() stoesst es an, solange eines fehlt.
+let aktuellesPrefetchLaeuft = false;
+let aktuellesPrefetchFehler = 0;
+let aktuellesPrefetchNaechster = 0;
+
 function prefetchNextAktuelles() {
-  api('nextAktuelles').then(r => { if (r.ok && r.item) aktuellesNextItem = r.item; });
+  if (aktuellesPrefetchLaeuft || aktuellesNextItem) return;
+  if (Date.now() < aktuellesPrefetchNaechster) return;
+  aktuellesPrefetchLaeuft = true;
+  api('nextAktuelles').then(r => {
+    aktuellesPrefetchLaeuft = false;
+    if (r.ok && r.item) {
+      aktuellesNextItem = r.item;
+      aktuellesPrefetchFehler = 0;
+      return;
+    }
+    aktuellesPrefetchFehler++;
+    aktuellesPrefetchNaechster = Date.now() + Math.min(120000, 10000 * aktuellesPrefetchFehler);
+    logEvent('aktuelles_vorladen', 'fehlgeschlagen', { code: r.code || (r.ok ? 'leer' : 'fehler'), versuch: aktuellesPrefetchFehler });
+  });
+}
+
+// Spotify fuer einen Beitrag anhalten. Direkt, wenn moeglich (~0,3 s statt
+// 2-3 s - der Beitrag setzt damit viel genauer am Songende an).
+function playerPauseForInterjection() {
+  if (!spActive()) return api('playerPause');
+  return spCmd('pause', '/me/player/pause', 'PUT')
+    .catch(err => {
+      // 403 = war schon pausiert - kein Grund, den Beitrag ausfallen zu lassen.
+      if (err.status !== 403) throw err;
+    })
+    .then(() => sp('/me/player?additional_types=episode'))
+    .then(state => ({
+      ok: true,
+      uri: state && state.item ? state.item.uri : null,
+      progressMs: state && typeof state.progress_ms === 'number' ? state.progress_ms : null
+    }))
+    .catch(() => api('playerPause'));
+}
+
+// Nach dem Beitrag: optional den Ausklang-Rest ueberspringen, optional an den
+// Songanfang, dann weiterspielen. Klappt es direkt nicht, macht es der Server.
+function playerResumeAfterInterjection(params) {
+  params = params || {};
+  if (!spActive()) return api('playerResume', Object.keys(params).length ? params : undefined);
+  let kette = Promise.resolve();
+  if (params.skipNext) kette = kette.then(() => spCmd('next', '/me/player/next', 'POST'));
+  if (params.seekMs !== undefined && params.seekMs !== null) {
+    kette = kette.then(() => spCmd('seek', '/me/player/seek?position_ms=' + Math.max(0, parseInt(params.seekMs, 10) || 0), 'PUT')
+      .catch(() => null)); // Spulen ist nett, aber kein Grund zu scheitern
+  }
+  return kette
+    .then(() => spCmd('play', '/me/player/play', 'PUT').catch(err => {
+      // 403 = laeuft schon (z.B. hat "next" die Wiedergabe gestartet)
+      if (err.status !== 403) throw err;
+    }))
+    .then(() => ({ ok: true }))
+    .catch(() => api('playerResume', Object.keys(params).length ? params : undefined));
 }
 
 function rollInterjectionThreshold() {
@@ -1172,7 +1784,7 @@ async function startInterjection(item, kind) {
   const zielDauer = (st && st.current) ? st.current.durationMs : null;
 
   try {
-    const pauseRes = await api('playerPause');
+    const pauseRes = await playerPauseForInterjection();
     if (pauseRes && pauseRes.ok && typeof pauseRes.progressMs === 'number') {
       let versatzMs = null;
       if (zielUri && pauseRes.uri === zielUri) {
@@ -1205,7 +1817,9 @@ async function startInterjection(item, kind) {
         logEvent('grenze', (versatzMs < 0 ? 'zu frueh' : 'zu spaet'), {
           versatzMs: Math.round(versatzMs),
           korrekturWar: progressKorrekturMs,
-          vorlaufWar: Math.min(4500, Math.max(600, apiLatency + 600)),
+          vorlaufWar: pauseLeadMs(),
+          direkt: spActive(),
+          hintergrund: document.hidden,
           behandlung: resumeSkipNext ? 'ueberspringen' : 'auf 0 zurueck',
         gleicherSong: !!(zielUri && pauseRes.uri === zielUri)
         }, Math.abs(Math.round(versatzMs)));
@@ -1237,12 +1851,29 @@ async function startInterjection(item, kind) {
     tTotal.textContent = fmt(d * 1000);
   };
 
+  let angelaufen = false;
+  let startWaechter = null;
   await new Promise(resolve => {
     interjectionResolve = resolve;
     const done = () => resolve();
     newsAudio.onended = done;
     newsAudio.onerror = done;
-    newsAudio.play().catch(done);
+    newsAudio.onplaying = () => { angelaufen = true; };
+    newsAudio.play().catch(e => {
+      if (!interjectionCancelReason) interjectionCancelReason = 'play_abgelehnt:' + ((e && e.name) || 'fehler');
+      done();
+    });
+
+    // Laeuft der Beitrag gar nicht erst an (Android haelt Medien in einer
+    // Hintergrund-App gern zurueck, oder die Audiodatei laedt nicht), stand
+    // bisher bis zu 40 s Stille im Raum. Jetzt nach kurzer Frist aufgeben und
+    // die Musik weiterlaufen lassen.
+    startWaechter = setTimeout(() => {
+      if (!angelaufen && !(interjectionActive && interjectionActive.paused)) {
+        interjectionCancelReason = 'start_blockiert';
+        done();
+      }
+    }, document.hidden ? 10000 : 25000);
 
     // Wachhund statt starrem Timeout: ein fester Timer wuerde eine laengere
     // Nutzer-Pause faelschlich als Abbruch werten. Hier zaehlt nur, ob die
@@ -1256,6 +1887,8 @@ async function startInterjection(item, kind) {
     }, 5000);
   });
   clearInterval(watchdog);
+  clearTimeout(startWaechter);
+  newsAudio.onplaying = null;
 
   const cancelReason = interjectionCancelReason;
   interjectionCancelReason = null;
@@ -1283,7 +1916,7 @@ async function startInterjection(item, kind) {
     const params = {};
     if (resumeSkipNext) params.skipNext = '1';
     if (resumeSeekMs !== null) params.seekMs = resumeSeekMs;
-    try { await api('playerResume', Object.keys(params).length ? params : undefined); }
+    try { await playerResumeAfterInterjection(params); }
     catch (e) { /* naechster Poll zeigt den echten Stand */ }
   }
   resumeSeekMs = null;
@@ -1342,11 +1975,20 @@ btnPower.addEventListener('click', () => {
   const phase = st && st.ok ? st.phase : 'idle';
   if (phase === 'playing') {
     setBusy('Pausiere…');
-    api('pause').then(() => { busy = null; refresh(); })
+    // Direkt: sofort. Ueber den Server: 2-30 s. Das PAUSED-Flag des Servers
+    // braucht es dafuer nicht - der Nachschub legt ohnehin nur nach, wenn
+    // Spotify wirklich spielt.
+    const weg = spActive()
+      ? spCmd('pause', '/me/player/pause', 'PUT').catch(err => { if (err.status !== 403) return api('pause'); })
+      : api('pause');
+    weg.then(() => { busy = null; refresh(); })
       .catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
   } else if (phase === 'paused') {
     setBusy('Setze fort…');
-    api('resume').then(r => {
+    const weg = spActive()
+      ? spCmd('play', '/me/player/play', 'PUT').catch(err => { if (err.status !== 403) return api('resume'); })
+      : api('resume');
+    weg.then(() => {
       busy = null;
       refresh();
     }).catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
@@ -1368,8 +2010,13 @@ btnEnd.addEventListener('click', () => {
   btnNews.classList.remove('active');
   renderUpdateButton();
   setBusy('Beende…');
-  api('stopSession').then(() => { busy = null; refresh(); })
-    .catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
+  // Musik direkt sofort anhalten; die Session beendet trotzdem der Server.
+  if (spActive()) spCmd('pause', '/me/player/pause', 'PUT').catch(() => {});
+  api('stopSession').then(() => {
+    busy = null;
+    srv = Object.assign({}, srv || {}, { sessionActive: false, current: null, queueAhead: 0 });
+    refresh();
+  }).catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
 });
 
 btnSkip.addEventListener('click', () => {
@@ -1377,6 +2024,14 @@ btnSkip.addEventListener('click', () => {
                               song: curSong ? (curSong.artist + ' – ' + curSong.title) : null });
   if (interjectionActive) { cancelInterjection('user_skip'); return; }
   btnSkip.disabled = true;
+  if (spActive()) {
+    // Direkt weiter; die Warteschlangen-Buchfuehrung des Servers gleicht sich
+    // beim naechsten Server-Abruf selbst ab (syncQueueState_).
+    spCmd('next', '/me/player/next', 'POST')
+      .then(() => setTimeout(refresh, 700))
+      .catch(() => api('skip').then(() => setTimeout(refresh, 700)));
+    return;
+  }
   api('skip').then(r => {
     if (r.ok && r.current) { renderCurrent(r.current); progressBase = 0; progressAt = Date.now(); }
     else if (!r.ok) { st = Object.assign({}, st, { message: r.message, phase: 'error' }); render(); }
@@ -1405,6 +2060,15 @@ btnDislike.addEventListener('click', () => {
   logEvent('knopf', 'dislike', curSong ? (curSong.artist + ' – ' + curSong.title) : null);
   if (!currentKey) return;
   flashSent(btnDislike);
+  if (spActive()) {
+    // Sofort weiter, bewertet wird im Hintergrund (noskip: sonst floege auch
+    // der naechste Song gleich mit raus).
+    const key = currentKey;
+    spCmd('next', '/me/player/next', 'POST')
+      .then(() => { api('dislike', { key: key, noskip: '1' }); setTimeout(refresh, 700); })
+      .catch(() => api('dislike', { key: key }).then(() => setTimeout(refresh, 700)));
+    return;
+  }
   api('dislike', { key: currentKey }).then(r => {
     if (r.current) { renderCurrent(r.current); progressBase = 0; progressAt = Date.now(); }
     setTimeout(refresh, 2500);
@@ -1529,7 +2193,13 @@ setTimeout(() => {
 
 tickTimer = setInterval(tick, 500);
 render();
-refresh();
+// Kommt die Seite gerade von der Spotify-Anmeldung zurueck, erst die Tokens
+// holen - dann laeuft schon der allererste Abruf direkt.
+spHandleRedirect().catch(() => {}).then(() => {
+  logEvent('spotify_direkt', spConnected() ? 'aktiv' : 'aus', { redirect: SP_REDIRECT });
+  render();
+  refresh();
+});
 </script>
 
 </body>
