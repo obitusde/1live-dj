@@ -85,6 +85,15 @@ nicht per Code im Skript behebbar. Deshalb:
    Endpunkt `action=verifyUris` prüft das ganze Sheet auf einen Schlag
    (beim letzten Lauf: 179 geprüft, 0 falsch).
 
+## Nachschub an der Songgrenze (Backend @101, 17.09.2026)
+Das Neusetzen der Spotify-Liste mitten im Song gab einen kurzen hörbaren
+Aussetzer (16.09., 00:20:38, „Axel F"). Der 5-Minuten-Trigger wartet jetzt bis
+kurz vor Songende (max. 150 s, Lock währenddessen freigegeben) und setzt die
+Liste ab dem nächsten Song. Liegt das Ende weiter weg, wird verschoben
+(`nachschub_verschoben`); nur bei ≤1 offenen Songs noch sofort wie früher.
+Pausiert die App gerade für einen Beitrag, bricht der Trigger ab.
+Log: `liste_neu_gesetzt` hat jetzt `amSongende`. QUEUE_AHEAD_TARGET 3 → 4.
+
 ## Beiträge nur bei offener App (Entscheidung 17.09.2026)
 Android friert die PWA ~30–60 s nach dem Wegwechseln komplett ein (Log
 16.09., 23:31 und 23:42: danach keinerlei Abrufe mehr). Beiträge laufen
