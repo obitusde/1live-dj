@@ -94,6 +94,16 @@ Liste ab dem nächsten Song. Liegt das Ende weiter weg, wird verschoben
 Pausiert die App gerade für einen Beitrag, bricht der Trigger ab.
 Log: `liste_neu_gesetzt` hat jetzt `amSongende`. QUEUE_AHEAD_TARGET 3 → 4.
 
+## Eigene Playlists bleiben unangetastet (Backend @102, 19.09.2026)
+- Nachschub nur, wenn der laufende Song aus einer DJ-Liste stammt
+  (`vonUns`); fremde Musik verlängert die Session nicht mehr. Vorher ersetzte
+  der Trigger eine eigene Playlist durch DJ-Songs (18.09., 14:37).
+- Start übernimmt nur noch laufende DJ-Musik; bei fremder Musik startet der DJ
+  neu.
+- 15 s Kulanz nach dem Setzen einer Liste (`LIST_SET_AT`): Spotify meldet
+  kurz noch den alten Titel, das verwarf vorher die ganze DJ-Liste.
+- Frontend: keine Beiträge in fremde Musik, Anzeige „nicht vom DJ".
+
 ## Beiträge nur bei offener App (Entscheidung 17.09.2026)
 Android friert die PWA ~30–60 s nach dem Wegwechseln komplett ein (Log
 16.09., 23:31 und 23:42: danach keinerlei Abrufe mehr). Beiträge laufen
