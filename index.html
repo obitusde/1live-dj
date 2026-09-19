@@ -926,7 +926,9 @@ function renderCurrent(cur) {
       // 👍/👎 wirkungslos - das soll man sehen, statt zu raten.
       // metaPending: Direktbetrieb, der Server hat den neuen Song noch nicht
       // gesehen - dann lieber gar nichts sagen als etwas Falsches.
-      if (!cur.key && !cur.metaPending) parts.push('aus Spotifys Warteschlange');
+      // vonUns === false: in Spotify selbst gestartet (z.B. eigene Playlist).
+      if (cur.vonUns === false) parts.push('nicht vom DJ');
+      else if (!cur.key && !cur.metaPending) parts.push('aus Spotifys Warteschlange');
       if (cur.station) parts.push(STATION_LABELS[cur.station] || cur.station);
       if (cur.playCount) parts.push(cur.playCount + '× gespielt');
       npMeta.textContent = parts.join(' · ');
@@ -1823,6 +1825,9 @@ function beitragBereit(item) {
 function maybeTriggerInterjection() {
   if (interjectionActive || busy) return;
   if (!st || !st.ok || !st.sessionActive) return;
+  // Laeuft nachweislich fremde Musik (eigene Playlist), keine Beitraege
+  // dazwischenschieben - die DJ-Session ist dann nur noch nicht abgelaufen.
+  if (st.current && st.current.vonUns === false) return;
 
   if (document.hidden) {
     const kandidat = naechsterBeitrag();
