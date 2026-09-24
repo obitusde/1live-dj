@@ -6,7 +6,8 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 
 ## Projektstruktur
 - `D:\Coding\1live-dj` – PWA-Frontend, GitHub Pages (`obitusde/1live-dj`)
-- `D:\Coding\1live-webapp` – Apps-Script-Backend (clasp), Script-ID
+- `D:\Coding\1live-webapp` – Apps-Script-Backend (clasp), seit 24.09.2026 auch
+  als privates Repo `obitusde/1live-webapp`, Script-ID
   `19PfFc6kisaUKyJ2RqKZ_BADzG0c3dMvXB3nCpdg7a-uA0D-ym0VjKWJv`
 - `D:\Coding\1live` – alter Radioplayer, **teilt sich dasselbe Apps-Script-
   Projekt** über ein zweites Deployment (`AKfycbwoAI846…`, nur
