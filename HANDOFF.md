@@ -94,6 +94,15 @@ Liste ab dem nächsten Song. Liegt das Ende weiter weg, wird verschoben
 Pausiert die App gerade für einen Beitrag, bricht der Trigger ab.
 Log: `liste_neu_gesetzt` hat jetzt `amSongende`. QUEUE_AHEAD_TARGET 3 → 4.
 
+## Werbeschnitt für Podcasts (Backend @104, 24.09.2026)
+`BEITRAG_SCHNITT` in `News.js` (D:\Coding\1live-webapp): pro Sendungsname
+`{ ab: '1:15', bis: '9:05' }`, Zeiten als m:ss/h:mm:ss/Sekunden, `bis: null`
+= bis zum Ende. Gesetzt: Morning Briefing 1:15–9:05. `feedItemPayload_`
+liefert daraus `startMs`/`endeMs`/`vollDauerMs`; die App steigt dort ein,
+beendet dort, rechnet Anzeige und Spultasten im geschnittenen Bereich
+(Log: `beitrag_ende` mit `grund: schnitt_ende`). Die Feed-Länge wird NICHT
+zur Plausibilisierung genutzt – sie ist oft zu kurz.
+
 ## Eigene Playlists bleiben unangetastet (Backend @102, 19.09.2026)
 - Nachschub nur, wenn der laufende Song aus einer DJ-Liste stammt
   (`vonUns`); fremde Musik verlängert die Session nicht mehr. Vorher ersetzte
