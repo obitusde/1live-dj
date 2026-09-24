@@ -1883,7 +1883,8 @@ async function startInterjection(item, kind) {
   interjectionActive = { item: item, kind: kind, paused: false };
   let watchdog = null;
   logEvent('beitrag_start', (item.show || '') + ' – ' + (item.title || ''), {
-    art: kind, quelle: item.source, laengeMs: item.durationMs
+    art: kind, quelle: item.source, laengeMs: item.durationMs,
+    ab: item.startMs || 0, bis: item.endeMs || null
   });
   render();
 
@@ -1961,15 +1962,36 @@ async function startInterjection(item, kind) {
     newsAudio.src = item.url;
     newsAudio.dataset.item = item.url;
   }
+  // Werbung am Anfang/Ende ueberspringen (Zeiten kommen aus BEITRAG_SCHNITT
+  // in News.js). Anzeige und Spultasten rechnen ab dem Einstiegspunkt.
+  const abSek   = (item.startMs || 0) / 1000;
+  const bisSek  = item.endeMs ? item.endeMs / 1000 : null;
+  const setzeEinstieg = () => {
+    if (abSek > 0 && newsAudio.currentTime < abSek - 0.5) {
+      try { newsAudio.currentTime = abSek; } catch (e) { /* kommt beim naechsten Ereignis nochmal */ }
+    }
+  };
+  if (abSek > 0) {
+    if (newsAudio.readyState >= 1) setzeEinstieg();
+    newsAudio.onloadedmetadata = setzeEinstieg;
+  }
+
   progressWrap.classList.remove('hidden');
   progressFill.style.width = '0%';
   tElapsed.textContent = '0:00';
   tTotal.textContent = fmt(item.durationMs || 0);
   newsAudio.ontimeupdate = () => {
-    const d = newsAudio.duration || (item.durationMs ? item.durationMs / 1000 : 0);
-    if (!d) return;
-    progressFill.style.width = (100 * newsAudio.currentTime / d).toFixed(1) + '%';
-    tElapsed.textContent = fmt(newsAudio.currentTime * 1000);
+    if (bisSek && newsAudio.currentTime >= bisSek) {
+      // Ende des eigentlichen Beitrags erreicht - der Rest ist Werbung.
+      if (!interjectionCancelReason) interjectionCancelReason = 'schnitt_ende';
+      if (interjectionResolve) interjectionResolve();
+      return;
+    }
+    const ende = bisSek || newsAudio.duration || ((item.durationMs || 0) / 1000 + abSek);
+    const d = Math.max(1, ende - abSek);
+    const pos = Math.max(0, newsAudio.currentTime - abSek);
+    progressFill.style.width = (100 * Math.min(1, pos / d)).toFixed(1) + '%';
+    tElapsed.textContent = fmt(pos * 1000);
     tTotal.textContent = fmt(d * 1000);
   };
 
@@ -2016,8 +2038,10 @@ async function startInterjection(item, kind) {
   interjectionCancelReason = null;
   interjectionResolve = null;
 
-  const gehoert = newsAudio.currentTime || 0;
+  // Gehoert wird ab dem Einstiegspunkt gezaehlt, nicht ab Dateianfang.
+  const gehoert = Math.max(0, (newsAudio.currentTime || 0) - abSek);
   newsAudio.onended = null; newsAudio.onerror = null; newsAudio.ontimeupdate = null;
+  newsAudio.onloadedmetadata = null;
   newsAudio.pause();
   newsAudio.removeAttribute('src');
   delete newsAudio.dataset.item;
@@ -2212,9 +2236,14 @@ btnFavorite.addEventListener('click', () => {
 
 function seekBy(seconds) {
   if (!interjectionActive) return;
-  const dur = newsAudio.duration || (interjectionActive.item.durationMs || 0) / 1000;
+  // Innerhalb des geschnittenen Bereichs bleiben - sonst landet man in der
+  // Werbung davor oder danach (siehe BEITRAG_SCHNITT in News.js).
+  const it = interjectionActive.item || {};
+  const ab = (it.startMs || 0) / 1000;
+  const bis = it.endeMs ? it.endeMs / 1000
+                        : (newsAudio.duration || ((it.durationMs || 0) / 1000 + ab));
   const target = newsAudio.currentTime + seconds;
-  newsAudio.currentTime = Math.max(0, dur ? Math.min(dur - 0.5, target) : Math.max(0, target));
+  newsAudio.currentTime = Math.max(ab, bis ? Math.min(bis - 0.5, target) : target);
 }
 btnBack5.addEventListener('click', () => { logEvent('knopf', 'zurueck5', Math.round(newsAudio.currentTime)); seekBy(-5); });
 btnFwd10.addEventListener('click', () => { logEvent('knopf', 'vor10', Math.round(newsAudio.currentTime)); seekBy(10); });
