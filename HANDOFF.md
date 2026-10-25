@@ -1,7 +1,7 @@
 # 1LIVE DJ – Stand und offene Punkte
 
 Alles unten ist bereits committed, gepusht (GitHub Pages) und deployt (Apps
-Script @105). Nichts hängt offen. Das hier ist nur eine Übergabe, damit du auf
+Script @116). Nichts hängt offen. Das hier ist nur eine Übergabe, damit du auf
 dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 
 ## Projektstruktur
@@ -15,9 +15,55 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
   Deployment-ID angeben (`clasp update-deployment <id>`), nie blind neu
   deployen, sonst zieht man versehentlich den falschen Frontend-Stand mit.
 - DJ-Deployment-ID: `AKfycbxBbH87136ak1xaEq16iz-x52AiasndeZUhFcrQYbIgNlx2NfWBA_NZlhw7SP7hx6hxrQ`
-  (aktuell @105, gleiche `/exec`-URL bleibt bei jedem Redeploy erhalten)
+  (aktuell @116, gleiche `/exec`-URL bleibt bei jedem Redeploy erhalten)
 - `clasp run` funktioniert nicht (Skript ist nicht als API-Executable
   deployt) – Diagnose läuft über eigene `action=`-Endpunkte im Backend.
+
+## Spotify nimmt keine Songliste mehr an (Backend @116, 26.10.2026)
+**Das ist die Ursache dafür, dass der DJ tagelang nichts abspielte.** Das
+Protokoll meldete "start ok", auf dem Handy blieb es still. Schritt für
+Schritt nachgemessen (Diagnose-Endpunkte `playerRaw`, `playProbe`, `rawPut`):
+
+| Befehl | Antwort | Wirkung auf dem Handy |
+|---|---|---|
+| `play` mit EINEM Song, App pausiert | 204 | läuft los |
+| `play` mit ZWEI Songs (beide spielbar) | 204 | **Player danach leer** |
+| `play`, während etwas läuft | 204 | nichts |
+| `pause` / `shuffle` / `repeat` / `queue` | 200 | funktionieren |
+| `transfer` auf ein totes Gerät | 410 | - |
+
+Nach einem fehlgeschlagenen `play` reagiert das Gerät auf gar nichts mehr,
+bis man in der Spotify-App selbst wieder auf Play tippt. Das Gerät bleibt
+dabei in `/me/player/devices` als `is_active: true` gelistet - die Geräteliste
+lügt also. Konto, Token und Scopes sind in Ordnung.
+
+Daraus folgt der Umbau:
+- `spotifyPlay` pausiert zuerst, startet **genau einen** Song und hängt die
+  nächsten **einzeln** per `/me/player/queue` an (`SPOTIFY_VORAUS = 4`).
+  Rückgabe: wie viele Songs wirklich angekommen sind.
+- `topUpQueue_` setzt die Liste nicht mehr neu, sondern hängt nur noch an.
+  Damit entfallen `warteAufSonggrenze_`, `listenSignatur_` und die
+  SONGGRENZE-Konstanten - und mit ihnen die Aussetzer mitten im Lied.
+  `QUEUE_AHEAD_TARGET` 4 -> 2 (muss unter `SPOTIFY_VORAUS` liegen).
+- Der Start führt nur das als Warteschlange, was Spotify bestätigt hat.
+- **Preis:** Spotifys User-Queue lässt sich nicht leeren. Bei einem
+  Senderwechsel kommen also bis zu vier Songs des alten Senders noch - die
+  App kennzeichnet sie als "aus Spotifys Warteschlange".
+- Klappt der Start trotzdem nicht, wirft `spotifyPlay` `NICHT_GESTARTET` und
+  die App sagt es ehrlich, statt "Läuft" zu behaupten; sie probiert dann auch
+  nicht mehr im Kreis (PLAY_FAILED führt nicht mehr in den Wartezustand).
+
+## Sender-Playlists in Spotify (Backend @116, 26.10.2026)
+Zweiter, von jeder Fernsteuerung unabhängiger Weg - Wunsch des Nutzers:
+`Playlists.js` füllt pro Sender eine private Spotify-Playlist
+("1LIVE DJ - 1LIVE" usw.) mit 50 Songs und erneuert sie höchstens stündlich,
+pro Trigger-Lauf eine. Auswahl wie beim DJ (frisch vor abgekühlt), die letzte
+Füllung wird gemieden; **kein** `markQueuedBatch_` - ob der Nutzer die
+Playlist hört, wissen wir nicht.
+- Endpunkte: `action=playlists` (Namen + Links), `action=refreshPlaylists`
+  (optional `&station=1live`), `action=spotifyAuth` (Zustimmungsseite).
+- **Einmalig nötig:** neue Scopes `playlist-modify-private/public` -
+  `?action=spotifyAuth` im Browser öffnen und bestätigen, sonst 403.
 
 ## Umbau auf Knöpfe (Backend @105, 25.10.2026)
 Der Start-Knopf und die Dauermodi sind weg. Stattdessen:
