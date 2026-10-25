@@ -1,7 +1,7 @@
 # 1LIVE DJ – Stand und offene Punkte
 
 Alles unten ist bereits committed, gepusht (GitHub Pages) und deployt (Apps
-Script @51). Nichts hängt offen. Das hier ist nur eine Übergabe, damit du auf
+Script @105). Nichts hängt offen. Das hier ist nur eine Übergabe, damit du auf
 dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 
 ## Projektstruktur
@@ -15,9 +15,50 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
   Deployment-ID angeben (`clasp update-deployment <id>`), nie blind neu
   deployen, sonst zieht man versehentlich den falschen Frontend-Stand mit.
 - DJ-Deployment-ID: `AKfycbxBbH87136ak1xaEq16iz-x52AiasndeZUhFcrQYbIgNlx2NfWBA_NZlhw7SP7hx6hxrQ`
-  (aktuell @51, gleiche `/exec`-URL bleibt bei jedem Redeploy erhalten)
+  (aktuell @105, gleiche `/exec`-URL bleibt bei jedem Redeploy erhalten)
 - `clasp run` funktioniert nicht (Skript ist nicht als API-Executable
   deployt) – Diagnose läuft über eigene `action=`-Endpunkte im Backend.
+
+## Umbau auf Knöpfe (Backend @105, 25.10.2026)
+Der Start-Knopf und die Dauermodi sind weg. Stattdessen:
+- **Senderknöpfe** (1LIVE / BAY 1 / SPOON / MIX): ein Tipp setzt den Sender UND
+  startet sofort, immer mit `force=1` – laufende fremde Musik weicht also,
+  statt übernommen zu werden. Der Sender reist im selben Aufruf mit
+  (`startSession&mode=…`), das spart den früheren `setStations`-Roundtrip.
+  Ein Tipp auf den bereits laufenden Sender tut nichts.
+- **Sendungsknöpfe** (acht Stück, Liste kommt vom Server): ein Tipp merkt die
+  neueste Folge vor, sie kommt nach dem laufenden Lied; nochmal tippen nimmt
+  sie raus. Mehrere laufen hintereinander ohne Musik dazwischen. Der Platz in
+  der Warteliste wird beim TIPPEN belegt (Platzhalter `{laedt:true}`) – die
+  Feeds antworten unterschiedlich schnell, sonst hängt die Reihenfolge am Netz.
+  Ohne laufende Musik spielt ein Beitrag trotzdem, danach wird aber NICHTS
+  gestartet (`beitragKetteMusik`).
+- Weg: `btnNews`/`btnAktuelles`/`btnUpdate`, `aktuellesOn`, `updateQueue`,
+  `songsSinceInterjection`, `pendingStationSwitch`. Die Endpunkte
+  `latestNews`/`nextAktuelles`/`updateEpisodes` existieren noch, werden aber
+  nicht mehr aufgerufen.
+- Neu im Backend: `SENDUNGEN` in `News.js` (**hier Sendungen ändern**),
+  `action=sendungen` (nur die Liste, kein Feed-Abruf) und `action=sendung&show=…`
+  (neueste Folge; `erstes_item` für große Feeds, `neueste_sortiert` für DLF).
+- Der Power-Knopf ist nur noch Pause/Fortsetzen (und während eines Beitrags
+  dessen Pause); im Ruhezustand steht dort nur "Sender wählen".
+- Layout geprüft bei 329x627, 329x672 und 393x851: kein Überhang.
+
+## Wiederholungen abgestellt (Backend @105, 25.10.2026)
+Nutzermeldung "nach einiger Zeit wiederholen sich die Lieder". Drei Ursachen:
+1. **Spotifys Wiederholen-Modus** wurde nie ausgeschaltet (nur Shuffle). Stand
+   er auf "Liste wiederholen", lief die 10-Songs-Liste nach ~35 Min von vorne.
+   Jetzt `repeatAus_()` bei jedem Start und Nachschub.
+2. **Favoriten** hatten nur 3 h Sperrfrist und höheres Gewicht – jetzt 12 h
+   wie alle anderen, "öfter" wirkt nur noch über das Gewicht.
+3. **Harte Verlaufssperre**: die letzten 90 gezogenen Songs (`VERLAUF` in den
+   Properties) werden übersprungen; reicht der Vorrat nicht, zieht die zweite
+   Runde ohne Sperre.
+Dazu: **Startwelle** – am 25.10. um 19:51 liefen drei Starts in 25 s
+(Wartezustand der App plus ein Tipp), jeder zog 10 Songs und markierte sie als
+gespielt. Ein Start innerhalb von 20 s nach einem erfolgreichen mit derselben
+Senderwahl liefert jetzt den laufenden Stand zurück (`start_zusammengefasst`),
+statt eine neue Liste zu ziehen.
 
 ## Stand 16.09.2026 – Tempo und Stabilität (Backend @100)
 Messung: Das Skript beantwortet `status` in 0,4–0,8 s, Googles Web-App-Schicht

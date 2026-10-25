@@ -122,34 +122,39 @@ body {
 .btn-skip:active { transform: scale(0.97); border-color: #666; }
 .btn-skip:disabled { opacity: 0.3; cursor: default; }
 
-.extras-row { display: flex; gap: 8px; }
-.btn-extra {
-  flex: 1; min-width: 0; border: 1.5px solid #444; cursor: pointer; border-radius: 13px;
-  font-family: inherit; background: rgba(255,255,255,0.05); color: #ccc; font-size: 12.5px;
-  font-weight: 800; padding: 9px 2px; -webkit-tap-highlight-color: transparent; user-select: none;
+/* Sendungen: acht Knoepfe in zwei Reihen. Bewusst umbrechend und nicht
+   seitlich scrollend wie die Senderleiste - was man nicht sieht, tippt man
+   auch nicht. Darum klein, aber alle gleichzeitig sichtbar. */
+.show-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  flex: 1 1 calc(25% - 5px); min-width: 0; border: 1.5px solid #333; cursor: pointer;
+  border-radius: 11px; font-family: inherit; background: rgba(255,255,255,0.04);
+  color: #999; font-size: 11px; font-weight: 700; line-height: 1.15; padding: 7px 3px;
+  min-height: 32px; -webkit-tap-highlight-color: transparent; user-select: none;
   touch-action: manipulation; transition: transform .1s, filter .1s;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.btn-extra:active { transform: scale(0.97); }
-.btn-extra.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.22); }
+.chip:active { transform: scale(0.95); }
+.chip.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.22); }
+.chip.laedt { color: #666; }
 
 /* Beschriftung neben der Zeile statt darueber - spart rund 30px Hoehe,
    die auf kurzen Displays am unteren Rand gefehlt haben. */
-/* Die Leiste darf seitlich scrollen, aber der Scrollbalken darf keine Hoehe
-   kosten - mit dem dritten Sender kam er dazu und hat die Seite ueber den
-   Bildschirmrand geschoben. */
-.pill-row {
-  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px;
-  scrollbar-width: none; -ms-overflow-style: none;
-}
-.pill-row::-webkit-scrollbar { display: none; }
+/* Alle Sender teilen sich die Breite gleichmaessig. Seitliches Scrollen waere
+   hier falsch: seit die Leiste startet statt nur auszuwaehlen, muss jeder
+   Sender sichtbar sein - mit groesseren Kacheln ragte MIX sonst raus. */
+.pill-row { display: flex; gap: 6px; }
 .pill {
-  flex-shrink: 0; padding: 7px 13px; border-radius: 18px; border: 1.5px solid #444;
+  flex: 1 1 0; min-width: 0; padding: 7px 6px; border-radius: 18px; border: 1.5px solid #444;
   background: rgba(255,255,255,0.05); color: #999; font-size: 13px; font-weight: 700;
-  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+  cursor: pointer; white-space: nowrap; text-align: center; overflow: hidden;
+  text-overflow: ellipsis; -webkit-tap-highlight-color: transparent;
   font-family: inherit;
 }
 .pill.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.18); }
+/* Die Senderleiste ERSETZT den frueheren Start-Knopf: ein Tipp spielt diesen
+   Sender sofort. Darum deutlich groesser als eine reine Auswahlkachel. */
+.pill.station { padding: 12px 4px; font-size: 14.5px; font-weight: 800; color: #bbb; }
+.pill.station.active { color: #fff; box-shadow: 0 0 18px rgba(232,0,28,0.25); }
 .hidden { display: none !important; }
 
 .power-row { display: flex; gap: 10px; }
@@ -253,18 +258,16 @@ body {
 <div class="controls">
   <button class="btn-skip" id="btnSkip" disabled>⏭ Skip</button>
 
-  <div class="extras-row">
-    <button class="btn-extra" id="btnNews">📰 News</button>
-    <button class="btn-extra" id="btnAktuelles">📻 Aktuelles</button>
-    <button class="btn-extra" id="btnUpdate">🗞 Update</button>
-  </div>
-
-  <!-- Ohne Beschriftung "SENDER": die kostete 56px, und die Kacheln
-       brauchten auf einem 329px-Display 283px bei nur 241px Platz. -->
+  <!-- Ein Tipp = dieser Sender laeuft jetzt. Ohne Beschriftung "SENDER":
+       die kostete 56px, und die Kacheln brauchten auf einem 329px-Display
+       283px bei nur 241px Platz. -->
   <div class="pill-row" id="stationRow"></div>
 
+  <!-- Ein Tipp = diese Sendung kommt nach dem laufenden Lied. -->
+  <div class="show-row" id="showRow"></div>
+
   <div class="power-row">
-    <button class="btn-power start" id="btnPower">▶ Start</button>
+    <button class="btn-power busy" id="btnPower" disabled>Sender wählen</button>
     <button class="btn-end" id="btnEnd" disabled>Beenden</button>
   </div>
 </div>
@@ -314,8 +317,8 @@ const stationRow = $('stationRow');
 const statusLine = $('statusLine'), detailsBox = $('detailsBox'), alertBox = $('alertBox');
 const progressWrap = $('progressWrap'), progressFill = $('progressFill');
 const tElapsed = $('tElapsed'), tTotal = $('tTotal');
-const btnNews = $('btnNews'), btnAktuelles = $('btnAktuelles'), newsAudio = $('newsAudio');
-const btnUpdate = $('btnUpdate'), seekRow = $('seekRow'), feedbackRow = $('feedbackRow');
+const newsAudio = $('newsAudio'), showRow = $('showRow');
+const seekRow = $('seekRow'), feedbackRow = $('feedbackRow');
 const btnBack5 = $('btnBack5'), btnFwd10 = $('btnFwd10');
 
 const STATION_LABELS = { '1live': '1LIVE', 'br1': 'Bayern 1', 'br3': 'Bayern 3', 'spoon': 'Spoon Rock' };
@@ -370,17 +373,24 @@ const WAIT_BG_POLL_MS = 10000;  // im Hintergrund (Android drosselt das evtl.)
 //     laufenden Song minimal an statt seinen Nachfolger.
 //   - reaktiv in refresh(): falls die App waehrenddessen im Hintergrund war
 //     (kein tick() lief) und der Songwechsel erst im Nachhinein auffaellt.
-let pendingNews = null;               // vorbereitete Nachrichtenfolge, wartet auf die naechste Luecke
-let aktuellesOn = localStorage.getItem('aktuellesOn') === '1';
-let aktuellesNextItem = null;         // vorab geholt, damit beim Ausloesen keine Wartezeit entsteht
-let songsSinceInterjection = 0;
-let interjectionThreshold = 2;
+// Pro Sendung ein Knopf (Liste kommt vom Server, action=sendungen). Ein Tipp
+// merkt die neueste Folge vor, sie kommt nach dem laufenden Lied; nochmal
+// tippen nimmt sie wieder raus. Die frueheren Dauermodi "Aktuelles" und
+// "Update" sind damit weg - sie wurden kaum benutzt (Nutzer, 25.10.2026).
+let sendungen = [];
+try { sendungen = JSON.parse(localStorage.getItem('sendungen') || '[]') || []; } catch (e) { sendungen = []; }
+// Jeder Tipp belegt seinen Platz SOFORT - mit einem Platzhalter { laedt:true },
+// der ersetzt wird, sobald die Folge da ist. Erst beim Eintreffen einzureihen
+// waere falsch: die Feeds antworten unterschiedlich schnell (Nachrichten 3 s,
+// Kabarett aus dem Cache sofort), die Reihenfolge haette also am Netz gehangen
+// statt an der Tippreihenfolge.
+let beitragQueue = [];
+let showSig = '';                     // Signatur der Knopfleiste, gegen unnoetiges Neuzeichnen
+let beitragKetteMusik = false;        // lief Musik, als die Beitragsfolge begann?
 let interjectionActive = null;        // { item, kind, paused } waehrend eine Einspielung laeuft
-let updateQueue = [];                 // "Update"-Modus: die vier Folgen der Reihe nach
-// Senderwechsel wirkt erst zum naechsten Songende: dann wird die komplette
-// Wiedergabeliste bei Spotify durch Songs des neuen Senders ersetzt (der
-// Start-Aufruf setzt den Kontext neu, siehe topUpQueue_/handleStartSession).
-let pendingStationSwitch = false;
+// Welcher Sender soll laufen? Gemerkt fuer den Wartezustand: taucht das
+// Spotify-Geraet erst spaeter auf, startet die App genau diesen Sender.
+let wartenModus = null;
 let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
 let resumeSkipNext = false;           // true, wenn noch ein Ausklang-Rest zu ueberspringen ist
 let interjectionResolve = null;       // laesst Skip/Beenden die laufende Einspielung sofort abbrechen
@@ -801,7 +811,7 @@ function pauseLeadMs() {
 }
 
 function interjectionFeatureOn() {
-  return aktuellesOn || updateQueue.length > 0 || !!pendingNews;
+  return beitragQueue.length > 0;
 }
 
 // Aus dem Spotify-Rohstand dieselbe Form bauen, die action=status liefert -
@@ -964,23 +974,97 @@ function renderStations(list) {
   stationRow.innerHTML = '';
   list.forEach(s => {
     const b = document.createElement('button');
-    b.className = 'pill' + (s.active ? ' active' : '');
+    b.className = 'pill station' + (s.active ? ' active' : '');
     b.textContent = s.label;
-    b.addEventListener('click', () => {
-      // Genau eine Auswahl: ein Sender oder Mix. Ein Tipp auf die bereits
-      // aktive Kachel waere frueher ein Abwaehlen gewesen - jetzt gibt es
-      // keinen Zustand "gar kein Sender" mehr, also passiert nichts.
-      if (s.active) return;
-      logEvent('knopf', 'sender', { getippt: s.label });
-      api('setStations', { mode: s.id }).then(r => {
-        if (!r.ok) return;
-        stationSig = ''; renderStations(r.stations);
-        // Laeuft gerade Musik, wird die Liste zum Songende getauscht - sonst
-        // erst beim naechsten Start, da ist ohnehin nichts zu ersetzen.
-        if (st && st.ok && st.isPlaying) { pendingStationSwitch = true; render(); }
-      });
-    });
+    b.addEventListener('click', () => senderStarten(s, list));
     stationRow.appendChild(b);
+  });
+}
+
+// Ein Tipp auf einen Senderknopf heisst "spiel das jetzt". Das ersetzt den
+// alten Start-Knopf: der sagte nie, WAS er startet, und nach einem
+// Senderwechsel musste man ihn zusaetzlich druecken (der Wechsel geschah erst
+// zum naechsten Songende). force=1, damit laufende fremde Musik - eine eigene
+// Playlist etwa - sofort weicht, statt uebernommen zu werden.
+function senderStarten(s, list) {
+  const laeuftSchon = !!(st && st.ok && st.isPlaying && s.active &&
+                         st.current && st.current.vonUns !== false);
+  logEvent('knopf', 'sender', { getippt: s.label, aktiv: !!s.active, laeuftSchon: laeuftSchon });
+  if (laeuftSchon) return;  // laeuft bereits - ein Neustart waere nur ein Abbruch
+  wartenModus = s.id;
+  // Auswahl sofort umschalten, ohne auf den Server zu warten.
+  stationSig = '';
+  renderStations((list || []).map(x => Object.assign({}, x, { active: x.id === s.id })));
+  doStart({ mode: s.id, force: true, busyText: s.label + ' startet…' });
+}
+
+// -- Sendungsknoepfe -------------------------------------------------
+function renderShows() {
+  const sig = sendungen.map(sd => {
+    const i = beitragQueue.map(b => b.show).indexOf(sd.show);
+    return sd.kurz + ':' + (i + 1) + (i !== -1 && beitragQueue[i].laedt ? 'L' : '');
+  }).join(',');
+  if (sig === showSig) return;
+  showSig = sig;
+
+  showRow.innerHTML = '';
+  sendungen.forEach(sd => {
+    const platz = beitragQueue.map(b => b.show).indexOf(sd.show) + 1;
+    const laedt = platz > 0 && !!beitragQueue[platz - 1].laedt;
+    const b = document.createElement('button');
+    b.className = 'chip' + (platz ? ' active' : '') + (laedt ? ' laedt' : '');
+    // Die Nummer erscheint erst ab dem zweiten vorgemerkten Beitrag - sie
+    // soll die Reihenfolge klaeren, nicht jeden einzelnen Tipp nummerieren.
+    b.textContent = sd.kurz + (laedt ? ' …' : (platz > 1 ? ' ' + platz : ''));
+    b.addEventListener('click', () => tippeSendung(sd));
+    showRow.appendChild(b);
+  });
+}
+
+function ladeSendungen() {
+  api('sendungen').then(r => {
+    if (!r.ok || !r.sendungen || !r.sendungen.length) return;
+    sendungen = r.sendungen;
+    try { localStorage.setItem('sendungen', JSON.stringify(sendungen)); } catch (e) {}
+    showSig = ''; renderShows();
+  }).catch(() => { /* die zuletzt gemerkte Liste steht ja schon da */ });
+}
+
+function tippeSendung(sd) {
+  const platz = beitragQueue.map(b => b.show).indexOf(sd.show);
+  logEvent('knopf', 'sendung', { getippt: sd.kurz, warVorgemerkt: platz !== -1 });
+  if (platz !== -1) {
+    beitragQueue.splice(platz, 1);     // erneutes Tippen nimmt die Anfrage zurueck
+    renderShows(); render();
+    return;
+  }
+  // Noch im Tipp-Ereignis freischalten: danach darf der Browser den Beitrag
+  // auch abspielen, wenn die App zwischendurch im Hintergrund war.
+  medienFreischalten('sendung');
+  const halter = { show: sd.show, kurz: sd.kurz, laedt: true };
+  beitragQueue.push(halter);
+  renderShows(); render();
+
+  api('sendung', { show: sd.show }).then(r => {
+    const i = beitragQueue.indexOf(halter);
+    if (i === -1) return;              // zwischendurch wieder abbestellt
+    if (r.ok && r.item && r.item.url) {
+      beitragQueue[i] = r.item;
+      renderShows();
+      vorladenNaechsterBeitrag();
+      // Laeuft gerade ein Lied, wird es ausgespielt - das Ausloesen uebernimmt
+      // dann die Songende-Erkennung in tick().
+      if (!(st && st.ok && st.isPlaying)) maybeTriggerInterjection();
+      render();
+    } else {
+      beitragQueue.splice(i, 1);
+      renderShows();
+      setSoftError(r.message || (sd.kurz + ' ist gerade nicht erreichbar'), st ? st.phase : 'idle');
+    }
+  }).catch(() => {
+    const i = beitragQueue.indexOf(halter);
+    if (i !== -1) beitragQueue.splice(i, 1);
+    renderShows(); render();
   });
 }
 
@@ -1060,7 +1144,8 @@ function renderDetails() {
        ' (Vorlauf ' + (pauseLeadMs() / 1000).toFixed(1) + ' s)' +
        (wakeLock ? '<br>Bildschirm bleibt an (für Beiträge)' : '') +
        (isWaiting() ? '<br>Warte auf Gerät: noch ' + fmt(waitingUntil - Date.now()) : '') +
-       (updateQueue.length ? '<br>Update-Folgen offen: ' + updateQueue.length : '') + '<br>';
+       (beitragQueue.length ? '<br>Vorgemerkt: ' +
+          escapeHtml(beitragQueue.map(b => b.show).join(', ')) : '') + '<br>';
   h += '<br><b>Protokoll</b><br>Sitzung: ' + escapeHtml(logSession) +
        '<br>gepuffert: ' + logQueue.length + ' Ereignisse<br>';
   if (lastBadResponse) {
@@ -1111,7 +1196,7 @@ function renderInterjection() {
   feedbackRow.classList.add('hidden');
   seekRow.classList.remove('hidden');
 
-  const label = ia.kind === 'news' ? 'Nachrichten' : (ia.kind === 'update' ? 'Update' : 'Aktuelles');
+  const label = (ia.item && ia.item.show) || 'Beitrag';
   statusLine.className = 'statusline ' + (ia.paused ? 'paused' : 'playing');
   statusLine.innerHTML = '<span class="dot"></span>' +
     escapeHtml(ia.paused ? label + ' pausiert' : label + ' läuft…');
@@ -1140,6 +1225,8 @@ function renderWaiting() {
 
   npTitle.textContent = 'Warte auf Spotify-Gerät';
   npArtist.textContent = 'Spotify dort öffnen – ich starte von selbst';
+  // Die Senderknoepfe bleiben tippbar: ein anderer Sender ist jederzeit
+  // waehlbar, der Wartezustand startet dann diesen.
   npMeta.textContent = 'noch ' + fmt(restMs);
   npMeta.style.color = '';
   npMeta.classList.remove('clamp2');
@@ -1191,10 +1278,11 @@ function render() {
   }
   // Vorgemerktes sichtbar machen - sonst tippt man und nichts scheint zu passieren.
   if (!busy && st && st.ok) {
-    const wartet = [];
-    if (pendingStationSwitch) wartet.push('Sender wechselt nach dem Lied');
-    if (pendingNews) wartet.push('Nachrichten nach dem Lied');
-    if (wartet.length) text = text + ' · ' + wartet.join(' · ');
+    if (beitragQueue.length === 1) {
+      text = text + ' · ' + beitragQueue[0].show + ' nach dem Lied';
+    } else if (beitragQueue.length > 1) {
+      text = text + ' · ' + beitragQueue.length + ' Beiträge nach dem Lied';
+    }
   }
   // Lieber "ich schaue gerade nach" als eine Angabe, die nicht mehr stimmt.
   if (!busy && isStale()) { cls = 'busy'; text = 'Aktualisiere…'; }
@@ -1233,12 +1321,14 @@ function render() {
     btnPower.classList.add('busy');
     btnPower.disabled = false;
   } else {
-    // Wenn der Vorrat leer ist, dauert der Start ausnahmsweise laenger -
-    // das steht dann vorher am Knopf, statt hinterher zu ueberraschen.
+    // Gestartet wird ueber die Senderknoepfe - dort steht, WAS laeuft. Dieser
+    // Knopf ist nur noch Pause/Fortsetzen (und waehrend eines Beitrags dessen
+    // Pause), also hier bewusst nur ein Hinweis.
     const empty = st && st.ok && st.pool && !st.poolFresh && !st.poolKnown;
-    btnPower.innerHTML = '▶ Start' + (empty ? '<span class="sub">Liste leer – dauert ~20 s</span>' : '');
-    btnPower.classList.add('start');
-    btnPower.disabled = false;
+    btnPower.innerHTML = 'Sender wählen' +
+      (empty ? '<span class="sub">Liste leer – Start dauert ~20 s</span>' : '');
+    btnPower.classList.add('busy');
+    btnPower.disabled = true;
   }
 
   // Immer tippbar: das ist der Notausgang, der Session, Pause-Flag und
@@ -1311,7 +1401,6 @@ function tick() {
   if (interjectionActive) return;
   // Im Wartezustand laeuft hier nur der Countdown weiter.
   if (isWaiting() && !(st && st.ok && st.isPlaying)) { renderWaiting(); return; } // Fortschritt kommt waehrend einer Einspielung vom Audio-Element selbst (siehe startInterjection)
-  if (aktuellesOn && !aktuellesNextItem) prefetchNextAktuelles();
   vorladenNaechsterBeitrag();
   if (!st || !st.isPlaying || !st.current || !st.current.durationMs || progressBase === null ||
       !progressAt || Date.now() - progressAt > TRIGGER_STALE_MS) {
@@ -1337,13 +1426,7 @@ function tick() {
   const left = dur - pos;
   const lead = pauseLeadMs();
   if (left <= lead && left > -6000 && st.current.uri && triggeredForUri !== st.current.uri) {
-    if (pendingStationSwitch) {
-      // Vorrang vor Einspielungen: erst die Liste tauschen, Beitraege kommen
-      // dann ab dem naechsten Songende wieder normal.
-      triggeredForUri = st.current.uri;
-      pendingStationSwitch = false;
-      doStart({ busyText: 'Wechsle Sender…', force: true });
-    } else if (interjectionDue()) {
+    if (interjectionDue()) {
       triggeredForUri = st.current.uri;
       maybeTriggerInterjection();
     }
@@ -1351,11 +1434,7 @@ function tick() {
 }
 
 function interjectionDue() {
-  if (pendingNews) return true;
-  // Update-Modus hat Vorrang vor Aktuelles und braucht genau ein komplettes
-  // Lied Abstand.
-  if (updateQueue.length && songsSinceInterjection >= 1) return true;
-  return aktuellesOn && songsSinceInterjection >= interjectionThreshold && !!aktuellesNextItem;
+  return !!naechsterBeitrag();
 }
 
 // ── Polling: gezielt zum Songende statt stur alle 20 s ───────
@@ -1381,7 +1460,7 @@ function scheduleNext() {
   if (isWaiting()) {
     pollTimer = setTimeout(() => {
       if (Date.now() > waitingUntil) { refresh(); return; }  // Fenster abgelaufen -> normal weiter
-      doStart({ quiet: true });
+      doStart({ quiet: true, force: true, mode: wartenModus || undefined });
     }, document.hidden ? WAIT_BG_POLL_MS : WAIT_POLL_MS);
     return;
   }
@@ -1518,7 +1597,6 @@ function applyStatus(data, gesamtMs) {
       // sauber an dessen Ende.
       const newUri = data.current ? data.current.uri : null;
       if (lastSeenSongUri && newUri && newUri !== lastSeenSongUri && data.phase === 'playing' && !interjectionActive) {
-        songsSinceInterjection++;
         triggeredForUri = null;
         logEvent('song', (data.current.artist || '') + ' – ' + (data.current.title || ''), {
           sender: data.current.station || null,
@@ -1553,7 +1631,7 @@ function applyStatus(data, gesamtMs) {
       // Zustandspflege; klappt es nicht, laeuft der Wartezustand unveraendert
       // weiter (doStart() setzt waitingUntil dann erneut).
       if (waitingUntil > Date.now() && data.phase !== 'playing') {
-        doStart();
+        doStart({ force: true, mode: wartenModus || undefined });
         return;
       }
       if (waitingUntil && Date.now() > waitingUntil) {
@@ -1561,7 +1639,7 @@ function applyStatus(data, gesamtMs) {
         waitingUntil = 0;
         logEvent('warten_abgelaufen', 'kein Gerät gefunden', null, waitingSince ? Date.now() - waitingSince : undefined);
         waitingSince = 0;
-        setSoftError('Kein Gerät gefunden – Spotify öffnen und Start drücken', 'device_gone');
+        setSoftError('Kein Gerät gefunden – Spotify öffnen und Sender antippen', 'device_gone');
         scheduleNext();
         return;
       }
@@ -1601,6 +1679,7 @@ function doStart(opts) {
   if (!quiet) setBusy((opts && opts.busyText) || 'Starte…');
   const params = {};
   if (force) params.force = '1';
+  if (opts && opts.mode) params.mode = opts.mode;   // Sender im selben Aufruf setzen
   if (geraeteHinweis) params.hint = geraeteHinweis;
 
   spHasDevice().then(hatGeraet => {
@@ -1681,32 +1760,7 @@ function doStart(opts) {
   });
 }
 
-// ── Nachrichten & Aktuelles: die eigentliche Einspielung ──────
-// Frueher genau EIN Versuch: scheiterte der (Median 5,7 s ueber Apps Script),
-// blieb "Aktuelles" fuer den Rest der Sitzung stumm - interjectionDue()
-// braucht ein vorgeladenes Item. Jetzt mit Wiederholung und wachsendem
-// Abstand; tick() stoesst es an, solange eines fehlt.
-let aktuellesPrefetchLaeuft = false;
-let aktuellesPrefetchFehler = 0;
-let aktuellesPrefetchNaechster = 0;
-
-function prefetchNextAktuelles() {
-  if (aktuellesPrefetchLaeuft || aktuellesNextItem) return;
-  if (Date.now() < aktuellesPrefetchNaechster) return;
-  aktuellesPrefetchLaeuft = true;
-  api('nextAktuelles').then(r => {
-    aktuellesPrefetchLaeuft = false;
-    if (r.ok && r.item) {
-      aktuellesNextItem = r.item;
-      aktuellesPrefetchFehler = 0;
-      return;
-    }
-    aktuellesPrefetchFehler++;
-    aktuellesPrefetchNaechster = Date.now() + Math.min(120000, 10000 * aktuellesPrefetchFehler);
-    logEvent('aktuelles_vorladen', 'fehlgeschlagen', { code: r.code || (r.ok ? 'leer' : 'fehler'), versuch: aktuellesPrefetchFehler });
-  });
-}
-
+// ── Sendungen: die eigentliche Einspielung ──────────────
 // Spotify fuer einen Beitrag anhalten. Direkt, wenn moeglich (~0,3 s statt
 // 2-3 s - der Beitrag setzt damit viel genauer am Songende an).
 function playerPauseForInterjection() {
@@ -1743,11 +1797,6 @@ function playerResumeAfterInterjection(params) {
     }))
     .then(() => ({ ok: true }))
     .catch(() => api('playerResume', Object.keys(params).length ? params : undefined));
-}
-
-function rollInterjectionThreshold() {
-  songsSinceInterjection = 0;
-  interjectionThreshold = 1; // Beitrag und Lied wechseln sich ab
 }
 
 // Nur wenn wirklich eine Session laeuft ausloesen - sonst wuerde playerResume
@@ -1801,10 +1850,11 @@ document.addEventListener('click', () => {
   if (interjectionFeatureOn()) medienFreischalten('tipp');
 });
 
+// Der naechste Beitrag ist nur dann einer, wenn seine Folge schon da ist.
+// Ein noch ladender Platzhalter laesst das Lied einfach weiterlaufen.
 function naechsterBeitrag() {
-  if (pendingNews) return pendingNews;
-  if (updateQueue.length) return updateQueue[0];
-  return aktuellesOn ? aktuellesNextItem : null;
+  const b = beitragQueue[0];
+  return (b && !b.laedt) ? b : null;
 }
 
 function vorladenNaechsterBeitrag() {
@@ -1824,7 +1874,10 @@ function beitragBereit(item) {
 
 function maybeTriggerInterjection() {
   if (interjectionActive || busy) return;
-  if (!st || !st.ok || !st.sessionActive) return;
+  // Eine laufende DJ-Session ist NICHT noetig: ein Sendungsknopf soll auch
+  // ohne Musik funktionieren (z.B. nur Nachrichten horen). Fortgesetzt wird
+  // hinterher nur, wenn vorher wirklich Musik lief (beitragKetteMusik).
+  if (!st || !st.ok) return;
   // Laeuft nachweislich fremde Musik (eigene Playlist), keine Beitraege
   // dazwischenschieben - die DJ-Session ist dann nur noch nicht abgelaufen.
   if (st.current && st.current.vonUns === false) return;
@@ -1844,33 +1897,14 @@ function maybeTriggerInterjection() {
     }
   }
 
-  if (pendingNews) {
-    const item = pendingNews;
-    pendingNews = null;
-    btnNews.classList.remove('active');
-    startInterjection(item, 'news');
-    return;
-  }
-  if (updateQueue.length && songsSinceInterjection >= 1) {
-    const item = updateQueue.shift();
-    songsSinceInterjection = 0;
-    renderUpdateButton();
-    startInterjection(item, 'update');
-    return;
-  }
-  if (aktuellesOn && songsSinceInterjection >= interjectionThreshold && aktuellesNextItem) {
-    const item = aktuellesNextItem;
-    aktuellesNextItem = null;
-    rollInterjectionThreshold();
-    startInterjection(item, 'aktuelles');
-    prefetchNextAktuelles(); // fuer die naechste Runde gleich schon mal bereitlegen
-  }
-}
-
-function renderUpdateButton() {
-  const n = updateQueue.length;
-  btnUpdate.classList.toggle('active', n > 0);
-  btnUpdate.textContent = n > 0 ? '🗞 Update ' + n : '🗞 Update';
+  if (!naechsterBeitrag()) return;
+  // Merken, ob gerade Musik lief: nur dann wird sie nach dem letzten Beitrag
+  // wieder fortgesetzt. Sonst wuerde ein Beitrag ohne laufende Session am
+  // Ende ungefragt Musik starten.
+  beitragKetteMusik = !!(st && st.ok && st.isPlaying);
+  const item = beitragQueue.shift();
+  renderShows();
+  startInterjection(item, 'sendung');
 }
 
 function cancelInterjection(reason) {
@@ -1947,8 +1981,7 @@ async function startInterjection(item, kind) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: item.title,
-        artist: kind === 'update' ? (item.show || 'Podcast')
-                                  : ('Deutschlandfunk' + (item.show ? ' · ' + item.show : '')),
+        artist: (item.show || 'Podcast') + (item.source ? ' · ' + item.source : ''),
         album: '1LIVE DJ'
       });
     } catch (e) { /* nicht kritisch */ }
@@ -2059,7 +2092,19 @@ async function startInterjection(item, kind) {
     zurueckAufAnfang: resumeSeekMs === 0
   }, Date.now() - beginn);
 
-  if (cancelReason !== 'end_session') {
+  // Noch eine Sendung vorgemerkt? Dann direkt weiter, ohne die Musik
+  // zwischendurch anzuwerfen - wer drei Knoepfe tippt, will drei Beitraege
+  // hintereinander. Spotify bleibt dafuer einfach pausiert; der Einstiegs-
+  // punkt fuer das spaetere Fortsetzen wird beim naechsten Pausieren neu
+  // bestimmt (Spotify meldet dieselbe Stelle, es laeuft ja nichts).
+  if (cancelReason !== 'end_session' && naechsterBeitrag()) {
+    const naechste = beitragQueue.shift();
+    renderShows();
+    startInterjection(naechste, 'sendung');
+    return;
+  }
+
+  if (cancelReason !== 'end_session' && beitragKetteMusik) {
     const params = {};
     if (resumeSkipNext) params.skipNext = '1';
     if (resumeSeekMs !== null) params.seekMs = resumeSeekMs;
@@ -2070,41 +2115,6 @@ async function startInterjection(item, kind) {
   resumeSkipNext = false;
   refresh();
 }
-
-btnNews.addEventListener('click', () => {
-  logEvent('knopf', 'news', { warVorgemerkt: !!pendingNews, laeuft: !!(st && st.isPlaying) });
-  if (pendingNews) {
-    // erneutes Tippen nimmt die Anfrage wieder zurueck
-    pendingNews = null;
-    btnNews.classList.remove('active');
-    return;
-  }
-  btnNews.classList.add('active');
-  api('latestNews').then(r => {
-    if (r.ok && r.item) {
-      pendingNews = r.item;
-      // Nur sofort loslegen, wenn gerade wirklich nichts spielt. Laeuft ein
-      // Song, wird er ausgespielt - das Ausloesen uebernimmt dann die
-      // Songende-Erkennung in tick(). Vorher brach der Knopf den laufenden
-      // Song mitten drin ab.
-      if (!(st && st.ok && st.isPlaying)) maybeTriggerInterjection();
-      render();
-    } else {
-      btnNews.classList.remove('active');
-    }
-  }).catch(() => btnNews.classList.remove('active'));
-});
-
-btnAktuelles.addEventListener('click', () => {
-  logEvent('knopf', 'aktuelles', { neuerZustand: !aktuellesOn ? 'an' : 'aus' });
-  aktuellesOn = !aktuellesOn;
-  localStorage.setItem('aktuellesOn', aktuellesOn ? '1' : '0');
-  btnAktuelles.classList.toggle('active', aktuellesOn);
-  if (aktuellesOn) {
-    rollInterjectionThreshold();
-    if (!aktuellesNextItem) prefetchNextAktuelles();
-  }
-});
 
 btnPower.addEventListener('click', () => {
   logEvent('knopf', 'power', { phase: interjectionActive ? 'einspielung' : (st && st.phase), wartet: isWaiting() });
@@ -2120,6 +2130,8 @@ btnPower.addEventListener('click', () => {
   // hat hier die laufende Musik ersetzt.
   if (!st || verbindungUnklar) { setBusy('Prüfe…'); refresh().then(() => { busy = null; render(); }); return; }
   const phase = st && st.ok ? st.phase : 'idle';
+  // Gestartet wird ueber die Senderknoepfe - hier bleibt nur Pause/Fortsetzen.
+  if (phase !== 'playing' && phase !== 'paused') { refresh(); return; }
   if (phase === 'playing') {
     setBusy('Pausiere…');
     // Direkt: sofort. Ueber den Server: 2-30 s. Das PAUSED-Flag des Servers
@@ -2139,23 +2151,19 @@ btnPower.addEventListener('click', () => {
       busy = null;
       refresh();
     }).catch(e => { busy = null; st = { ok: false, message: String(e), phase: 'error' }; render(); });
-  } else {
-    doStart();
   }
 });
 
 btnEnd.addEventListener('click', () => {
   logEvent('knopf', 'beenden', { phase: st && st.phase });
   // Notausgang: eine laufende Einspielung sofort abbrechen, OHNE sie danach
-  // fortzusetzen - stopSession() pausiert ohnehin gleich alles. Auch den
-  // Update-Modus beenden, sonst liefe er nach dem naechsten Start weiter.
+  // fortzusetzen - stopSession() pausiert ohnehin gleich alles. Vorgemerkte
+  // Sendungen mit wegwerfen, sonst kaemen sie beim naechsten Start.
   if (interjectionActive) cancelInterjection('end_session');
-  updateQueue = [];
+  beitragQueue = [];
   waitingUntil = 0;
-  pendingStationSwitch = false;
-  pendingNews = null;
-  btnNews.classList.remove('active');
-  renderUpdateButton();
+  wartenModus = null;
+  renderShows();
   setBusy('Beende…');
   // Musik direkt sofort anhalten; die Session beendet trotzdem der Server.
   if (spActive()) spCmd('pause', '/me/player/pause', 'PUT').catch(() => {});
@@ -2248,39 +2256,6 @@ function seekBy(seconds) {
 btnBack5.addEventListener('click', () => { logEvent('knopf', 'zurueck5', Math.round(newsAudio.currentTime)); seekBy(-5); });
 btnFwd10.addEventListener('click', () => { logEvent('knopf', 'vor10', Math.round(newsAudio.currentTime)); seekBy(10); });
 
-btnUpdate.addEventListener('click', () => {
-  logEvent('knopf', 'update', { offeneFolgen: updateQueue.length });
-  if (updateQueue.length) {
-    // Erneutes Tippen bricht den Modus ab (eine gerade laufende Folge nicht).
-    updateQueue = [];
-    renderUpdateButton();
-    return;
-  }
-  btnUpdate.textContent = '🗞 lädt…';
-  btnUpdate.disabled = true;
-  api('updateEpisodes').then(r => {
-    btnUpdate.disabled = false;
-    if (r.ok && r.episodes && r.episodes.length) {
-      updateQueue = r.episodes;
-      // Update hat Vorrang - Aktuelles waehrenddessen ausschalten, damit sich
-      // die beiden Modi nicht gegenseitig die Luecken wegnehmen.
-      if (aktuellesOn) {
-        aktuellesOn = false;
-        localStorage.setItem('aktuellesOn', '0');
-        btnAktuelles.classList.remove('active');
-      }
-      songsSinceInterjection = 1; // die erste Folge kommt nach dem laufenden Lied
-      renderUpdateButton();
-      if (r.failed && r.failed.length) {
-        setSoftError('Update: ' + r.failed.join(', ') + ' gerade nicht erreichbar', st ? st.phase : 'idle');
-      }
-    } else {
-      renderUpdateButton();
-      setSoftError('Update-Folgen konnten nicht geladen werden', 'error');
-    }
-  }).catch(() => { btnUpdate.disabled = false; renderUpdateButton(); });
-});
-
 statusLine.addEventListener('click', () => { detailsOpen = !detailsOpen; renderDetails(); });
 btnReload.addEventListener('click', () => location.reload());
 
@@ -2313,13 +2288,14 @@ setInterval(() => {
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-btnAktuelles.classList.toggle('active', aktuellesOn);
-if (aktuellesOn) { rollInterjectionThreshold(); prefetchNextAktuelles(); }
-renderUpdateButton();
+// Die gemerkte Sendungsliste sofort zeichnen (die Knoepfe stehen damit ohne
+// Wartezeit da), danach beim Server nachfragen.
+renderShows();
+ladeSendungen();
 
 logEvent('app_start', navigator.userAgent.slice(0, 120), {
   fenster: window.innerWidth + 'x' + window.innerHeight,
-  aktuellesAn: aktuellesOn,
+  sendungen: sendungen.length,
   standalone: window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
 });
 
