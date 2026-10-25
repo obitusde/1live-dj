@@ -2303,6 +2303,12 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 renderShows();
 ladeSendungen();
 
+// Einmal beim Oeffnen Bescheid geben. Der Server haelt seinen 5-Minuten-Lauf
+// nur noch am Leben, solange wirklich jemand hoert (Wunsch vom 26.10.2026) -
+// und frischt bei dieser Gelegenheit Songvorrat und Sender-Playlists auf.
+// Bewusst ohne Auswertung: das darf die App nie aufhalten.
+api('aufwachen').catch(() => {});
+
 logEvent('app_start', navigator.userAgent.slice(0, 120), {
   fenster: window.innerWidth + 'x' + window.innerHeight,
   sendungen: sendungen.length,
