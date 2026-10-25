@@ -137,6 +137,26 @@ body {
 .chip.active { border-color: #e8001c; color: #fff; background: rgba(232,0,28,0.22); }
 .chip.laedt { color: #666; }
 
+/* Spotify-Playlists: eine schmale Zeile, bewusst unauffaelliger als die
+   Knoepfe darueber - man braucht sie selten, aber dann sofort. */
+.pl-row { display: flex; align-items: center; gap: 5px; }
+.pl-tag { color: #555; font-size: 10.5px; font-weight: 700; flex: 0 0 auto; }
+.pl-link {
+  flex: 1 1 0; min-width: 0; text-align: center; padding: 5px 2px; border-radius: 9px;
+  border: 1px solid #1f3a28; background: rgba(29,185,84,0.10); color: #6cc08b;
+  font-size: 10.5px; font-weight: 700; text-decoration: none; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; -webkit-tap-highlight-color: transparent;
+}
+.pl-link.leer { border-color: #333; background: rgba(255,255,255,0.03); color: #555; }
+.pl-link:active { filter: brightness(1.4); }
+.pl-frisch {
+  flex: 0 0 auto; width: 30px; padding: 5px 0; border-radius: 9px; cursor: pointer;
+  border: 1px solid #1f3a28; background: rgba(29,185,84,0.10); color: #6cc08b;
+  font-family: inherit; font-size: 12px; font-weight: 700;
+  -webkit-tap-highlight-color: transparent;
+}
+.pl-frisch:disabled { opacity: 0.45; }
+
 /* Beschriftung neben der Zeile statt darueber - spart rund 30px Hoehe,
    die auf kurzen Displays am unteren Rand gefehlt haben. */
 /* Alle Sender teilen sich die Breite gleichmaessig. Seitliches Scrollen waere
@@ -266,6 +286,10 @@ body {
   <!-- Ein Tipp = diese Sendung kommt nach dem laufenden Lied. -->
   <div class="show-row" id="showRow"></div>
 
+  <!-- Spotify-Playlists: oeffnen sich in Spotify, der Knopf rechts fuellt
+       sie neu. Ansonsten passiert das einmal taeglich. -->
+  <div class="pl-row" id="plRow"></div>
+
   <div class="power-row">
     <button class="btn-power busy" id="btnPower" disabled>Sender wählen</button>
     <button class="btn-end" id="btnEnd" disabled>Beenden</button>
@@ -317,7 +341,7 @@ const stationRow = $('stationRow');
 const statusLine = $('statusLine'), detailsBox = $('detailsBox'), alertBox = $('alertBox');
 const progressWrap = $('progressWrap'), progressFill = $('progressFill');
 const tElapsed = $('tElapsed'), tTotal = $('tTotal');
-const newsAudio = $('newsAudio'), showRow = $('showRow');
+const newsAudio = $('newsAudio'), showRow = $('showRow'), plRow = $('plRow');
 const seekRow = $('seekRow'), feedbackRow = $('feedbackRow');
 const btnBack5 = $('btnBack5'), btnFwd10 = $('btnFwd10');
 
@@ -391,6 +415,14 @@ let interjectionActive = null;        // { item, kind, paused } waehrend eine Ei
 // Welcher Sender soll laufen? Gemerkt fuer den Wartezustand: taucht das
 // Spotify-Geraet erst spaeter auf, startet die App genau diesen Sender.
 let wartenModus = null;
+
+// Spotify-Playlists (eine pro Sender plus Mix). Der Server fuellt sie einmal
+// taeglich; der Knopf hier macht es sofort. Gemerkt, damit die Links beim
+// Oeffnen ohne Wartezeit dastehen.
+let playlisten = [];
+try { playlisten = JSON.parse(localStorage.getItem('playlisten') || '[]') || []; } catch (e) { playlisten = []; }
+let plSig = '';
+let plLaeuft = false;
 let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
 let resumeSkipNext = false;           // true, wenn noch ein Ausklang-Rest zu ueberspringen ist
 let interjectionResolve = null;       // laesst Skip/Beenden die laufende Einspielung sofort abbrechen
@@ -497,6 +529,8 @@ const API_TIMEOUT_MS = 12000;
 // Abbruch nach 12 s loeste bisher nur Wiederholungen aus, die dann am
 // Server-Lock warteten (15.09., 11:21-11:23).
 const API_TIMEOUT_START_MS = 20000;
+// Gilt auch fuers Fuellen der Playlists: vier Listen mit je 50 Songs plus ein
+// Blick ins Radio dauern laenger als ein normaler Abruf.
 
 // ── Doppelt fragen statt lange warten ────────────────────────
 // Gemessen am 16.09.: das Skript selbst antwortet in 0,4-0,8 s, Googles
@@ -517,7 +551,8 @@ function apiOnce(action, params) {
   // Abruf wird erst im .then() geplant, also nie. Die Anzeige blieb dann
   // minutenlang stehen. Jetzt bricht sie ab und der Aufrufer plant weiter.
   const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const limit = action === 'startSession' ? API_TIMEOUT_START_MS : API_TIMEOUT_MS;
+  const limit = (action === 'startSession' || action === 'refreshPlaylists')
+    ? API_TIMEOUT_START_MS : API_TIMEOUT_MS;
   const killer = ctrl ? setTimeout(() => ctrl.abort(), limit) : null;
 
   return fetch(WEBAPP_URL + '?' + qs.toString(),
@@ -1018,6 +1053,76 @@ function renderShows() {
     b.textContent = sd.kurz + (laedt ? ' …' : (platz > 1 ? ' ' + platz : ''));
     b.addEventListener('click', () => tippeSendung(sd));
     showRow.appendChild(b);
+  });
+}
+
+function renderPlaylists() {
+  const sig = playlisten.map(p => p.label + ':' + (p.url ? '1' : '0')).join(',') + (plLaeuft ? '|L' : '');
+  if (sig === plSig) return;
+  plSig = sig;
+
+  plRow.innerHTML = '';
+  if (!playlisten.length) return;
+
+  const tag = document.createElement('span');
+  tag.className = 'pl-tag';
+  tag.textContent = 'PLAYLIST';
+  plRow.appendChild(tag);
+
+  playlisten.forEach(p => {
+    const a = document.createElement('a');
+    a.className = 'pl-link' + (p.url ? '' : ' leer');
+    a.textContent = p.label;
+    if (p.url) { a.href = p.url; a.target = '_blank'; a.rel = 'noopener'; }
+    else { a.title = 'Noch nicht angelegt'; }
+    a.addEventListener('click', () => logEvent('knopf', 'playlist', { getippt: p.label, da: !!p.url }));
+    plRow.appendChild(a);
+  });
+
+  const b = document.createElement('button');
+  b.className = 'pl-frisch';
+  b.textContent = plLaeuft ? '\u2026' : '\u21bb';
+  b.disabled = plLaeuft;
+  b.title = 'Playlists jetzt neu f\u00fcllen';
+  b.addEventListener('click', playlistsAuffrischen);
+  plRow.appendChild(b);
+}
+
+function ladePlaylists() {
+  api('playlists').then(r => {
+    if (!r.ok || !r.playlists) return;
+    playlisten = r.playlists;
+    try { localStorage.setItem('playlisten', JSON.stringify(playlisten)); } catch (e) {}
+    plSig = ''; renderPlaylists();
+  }).catch(() => { /* die gemerkten Links stehen ja schon da */ });
+}
+
+// Dauert laenger als ein normaler Abruf: vier Playlists mit je 50 Songs, dazu
+// vorher ein Blick ins Radio. Deshalb eigenes Zeitlimit und eine sichtbare
+// Rueckmeldung, statt es still im Hintergrund zu versuchen.
+function playlistsAuffrischen() {
+  if (plLaeuft) return;
+  logEvent('knopf', 'playlists_auffrischen');
+  plLaeuft = true;
+  plSig = ''; renderPlaylists();
+  setBusy('F\u00fclle Playlists\u2026');
+  api('refreshPlaylists').then(r => {
+    plLaeuft = false;
+    busy = null;
+    if (r.ok && r.playlists) {
+      playlisten = r.playlists;
+      try { localStorage.setItem('playlisten', JSON.stringify(playlisten)); } catch (e) {}
+      const fehler = (r.ergebnis || []).filter(x => x && x.fehler);
+      if (fehler.length) setSoftError('Playlists: ' + fehler[0].fehler, st ? st.phase : 'idle');
+    } else if (r.message) {
+      setSoftError('Playlists: ' + r.message, st ? st.phase : 'idle');
+    }
+    plSig = ''; renderPlaylists();
+    render();
+  }).catch(e => {
+    plLaeuft = false; busy = null;
+    plSig = ''; renderPlaylists();
+    setSoftError('Playlists konnten nicht gef\u00fcllt werden', st ? st.phase : 'idle');
   });
 }
 
@@ -2302,6 +2407,8 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 // Wartezeit da), danach beim Server nachfragen.
 renderShows();
 ladeSendungen();
+renderPlaylists();
+ladePlaylists();
 
 // Einmal beim Oeffnen Bescheid geben. Der Server haelt seinen 5-Minuten-Lauf
 // nur noch am Leben, solange wirklich jemand hoert (Wunsch vom 26.10.2026) -
