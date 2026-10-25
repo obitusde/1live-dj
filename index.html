@@ -1066,7 +1066,10 @@ function renderPlaylists() {
 
   const tag = document.createElement('span');
   tag.className = 'pl-tag';
-  tag.textContent = 'PLAYLIST';
+  // "IN SPOTIFY", nicht "PLAYLIST": die Senderknoepfe darueber heissen
+  // genauso, und ohne klares Wort sieht die Zeile aus wie dieselbe Auswahl
+  // noch einmal (Rueckfrage vom 26.10.2026).
+  tag.textContent = 'IN SPOTIFY';
   plRow.appendChild(tag);
 
   playlisten.forEach(p => {
@@ -1074,7 +1077,8 @@ function renderPlaylists() {
     a.className = 'pl-link' + (p.url ? '' : ' leer');
     a.textContent = p.label;
     if (p.url) { a.href = p.url; a.target = '_blank'; a.rel = 'noopener'; }
-    else { a.title = 'Noch nicht angelegt'; }
+    a.title = p.url ? ('Playlist "' + (p.name || p.label) + '" in Spotify öffnen')
+                    : 'Noch nicht angelegt';
     a.addEventListener('click', () => logEvent('knopf', 'playlist', { getippt: p.label, da: !!p.url }));
     plRow.appendChild(a);
   });
