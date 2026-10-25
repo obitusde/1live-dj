@@ -1734,15 +1734,25 @@ function doStart(opts) {
     } else {
       busy = null;
       st = Object.assign({}, st || {}, {
-        ok: true, phase: r.code === 'DEVICE_GONE' || r.code === 'NO_DEVICE' ? 'device_gone' : 'error',
+        ok: true,
+        phase: ['DEVICE_GONE', 'NO_DEVICE', 'PLAY_FAILED'].indexOf(r.code) !== -1 ? 'device_gone' : 'error',
         message: r.message || 'Start fehlgeschlagen'
       });
       // Scheiterte es am Geraet, ist die Absicht eindeutig: ab jetzt selbst
       // weiterprueferen und starten, sobald Spotify antwortet. Frueher musste
       // man dafuer erst den "Spotify öffnen"-Knopf benutzen.
-      if (['DEVICE_GONE', 'NO_DEVICE', 'PLAY_FAILED'].indexOf(r.code) !== -1) {
+      // Nur wenn das Geraet FEHLT, lohnt automatisches Weiterprobieren.
+      // PLAY_FAILED heisst: Spotify ist als Geraet da, nimmt den Befehl auch
+      // an, startet aber nichts - typischerweise, weil die Spotify-App auf dem
+      // Handy gar nicht mehr laeuft (sie bleibt danach noch eine Weile
+      // gelistet). Daran aendert Warten nichts, und jeder Versuch kostet rund
+      // 10 s. Also stehenbleiben und sagen, was zu tun ist.
+      if (['DEVICE_GONE', 'NO_DEVICE'].indexOf(r.code) !== -1) {
         if (!isWaiting()) { waitingSince = Date.now(); logEvent('warten_start', r.code, { meldung: r.message, direktGeprueft: !!r.lokal }); }
         waitingUntil = Date.now() + WAIT_WINDOW_MS;
+      } else if (r.code === 'PLAY_FAILED') {
+        waitingUntil = 0;
+        logEvent('play_abgelehnt', r.code, { meldung: r.message, detail: r.detail || null });
       }
       render();
       scheduleNext();
