@@ -19,7 +19,51 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 - `clasp run` funktioniert nicht (Skript ist nicht als API-Executable
   deployt) – Diagnose läuft über eigene `action=`-Endpunkte im Backend.
 
+## Der DJ spielt die Sender-Playlist als Kontext (Backend @131, 26.10.2026)
+**Das ist der Weg, der funktioniert.** Am 26.10. nachgemessen: ein `play` mit
+`context_uri` (einer Playlist) übernimmt die Wiedergabe auch dann, wenn gerade
+etwas anderes läuft - während dasselbe `play` mit einzelnen Songs (`uris`)
+stillschweigend ignoriert wird (siehe Abschnitt darunter). Ein Kontext ersetzt
+außerdem die komplette Nachfolgeliste, es bleiben also keine Reste des alten
+Senders in Spotifys Warteschlange.
+
+Also macht `handleStartSession` jetzt genau das:
+1. `playlistAktualisieren_(sender)` füllt die Playlist des Senders frisch (50
+   Songs) und gibt die Songs mit zurück,
+2. `spotifyPlayKontext_` startet sie als `context_uri` - bei Bedarf nach einem
+   `transfer` auf das Gerät (das hilft, wenn Spotify gerade schläft),
+3. mitgeführt werden nur die ersten 12 Songs (`QUEUE_FUEHREN`) für Anzeige,
+   Bewertung und Beiträge; dass es danach weiterläuft, erkennt die Engine am
+   Kontext (`istUnserePlaylist_`).
+
+`topUpQueue_` legt bei eigenem Kontext **nichts** nach - eine Playlist hält rund
+drei Stunden. Stattdessen trägt `verlaufNachziehen_` nach, was wirklich zu
+hören war, sonst käme die halbe Playlist gleich wieder.
+Der alte Weg (`spotifyPlay`, Warteschlange anhängen, `SPOTIFY_VORAUS`) steht
+noch als Notnagel im Code, wird aber nicht mehr benutzt.
+
+## Keine Live-Fassungen, keine italienischen Songs (Backend @133, 27.10.2026)
+Wunsch des Nutzers. `Filter.js`, geprüft an drei Stellen: beim Eintragen neuer
+Radio-Songs, beim Auflösen in Spotify (dort **hart** - lieber nichts finden als
+einen Mitschnitt) und bei jeder Auswahl (`classifyPool_`). Die dritte Stelle ist
+die wichtige: sie wirkt sofort auch auf die ~2800 Songs, die schon im Sheet
+stehen, und verbannt dort nichts - eine zu strenge Erkennung ist eine
+Code-Änderung weit entfernt von "wieder dabei".
+- "live" zählt nur im **Versionszusatz** (nach Gedankenstrich, in Klammern) oder
+  im Albumnamen. Sonst fielen "Live Is Life", "Live and Let Die", "Live While
+  We'''re Young" mit durch.
+- Italienisch: Interpretenliste (**nur ganze Wörter** - sonst steckt "Mina" in
+  "Nicki Minaj", "Nek" in "MNEK", "Blanco" in "benny blanco") plus
+  unverkennbar italienische Titelwörter; schwache Wörter (bella, vita, ciao)
+  erst ab zwei verschiedenen.
+- Nachsehen: `action=filterPruefen` (Trockenlauf über das Sheet),
+  `action=playlistsAufraeumen` (wirft Unerwünschtes aus den vier Playlists,
+  ohne die laufende Wiedergabe zu stören). Erster Lauf: 4 Live-Fassungen,
+  16 italienische Songs von 2795.
+
 ## Spotify nimmt keine Songliste mehr an (Backend @116, 26.10.2026)
+> Überholt durch den Abschnitt darüber - die Messungen stimmen, der Umbau auf
+> einzelne Songs + Warteschlange ist aber durch die Kontext-Wiedergabe ersetzt.
 **Das ist die Ursache dafür, dass der DJ tagelang nichts abspielte.** Das
 Protokoll meldete "start ok", auf dem Handy blieb es still. Schritt für
 Schritt nachgemessen (Diagnose-Endpunkte `playerRaw`, `playProbe`, `rawPut`):
