@@ -51,7 +51,7 @@ stehen, und verbannt dort nichts - eine zu strenge Erkennung ist eine
 Code-Änderung weit entfernt von "wieder dabei".
 - "live" zählt nur im **Versionszusatz** (nach Gedankenstrich, in Klammern) oder
   im Albumnamen. Sonst fielen "Live Is Life", "Live and Let Die", "Live While
-  We'''re Young" mit durch.
+  We're Young" mit durch.
 - Italienisch: Interpretenliste (**nur ganze Wörter** - sonst steckt "Mina" in
   "Nicki Minaj", "Nek" in "MNEK", "Blanco" in "benny blanco") plus
   unverkennbar italienische Titelwörter; schwache Wörter (bella, vita, ciao)
