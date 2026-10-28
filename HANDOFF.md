@@ -19,6 +19,64 @@ dem PC weißt, wo wir stehen und was noch sinnvoll wäre.
 - `clasp run` funktioniert nicht (Skript ist nicht als API-Executable
   deployt) – Diagnose läuft über eigene `action=`-Endpunkte im Backend.
 
+## Weniger Hintergrundläufe, mehr frische Musik (Backend @136, 28.10.2026)
+
+Ausdrücklicher Wunsch: so wenige Skriptläufe wie möglich, dabei trotzdem viel
+neue Musik und wenige Wiederholungen. Der 5-Minuten-Trigger hatte seit dem
+Umstieg auf Playlist-als-Kontext kaum noch Arbeit, suchte aber bei jedem
+Durchgang weiter nach Songs - und lief nach dem Ausschalten noch bis zu eine
+Stunde leer weiter (27.10. abends zwölf Läufe für nichts, alle mit
+`nachschub_uebersprungen: Spotify spielt gerade nicht`).
+
+**Vorratsarbeit nur noch morgens.** `playlistsTaeglich` ruft
+`playlistsAlleFuellen_(true)` → `poolGruendlichAuffuellen_()`: alle drei Sender
+(nicht nur der eingestellte), Rückstand-Bremse aus, `RESOLVE_TAEGLICH = 75`
+statt 12 Suchen, `POOL_TARGET_TAEGLICH = 60` frische Songs pro Sender.
+`refillPool_` nimmt dafür ein drittes Argument `opts` (`sender`, `ziel`,
+`ohneBacklogBremse`). Das Budget wird nicht mehr fix durch die Senderzahl
+geteilt, sondern pro Sender aus dem Rest gerechnet - 1LIVE ist reine Rotation
+und bringt oft gar nichts Neues, dann gehen die freien Suchen an Spoon.
+
+**Der Trigger schaltet sich schneller ab.** `LEER_LAEUFE` zählt Läufe ohne Ton
+(`leerlaufZaehlen_`, zurückgesetzt in `topUpQueue_`, sobald Musik läuft);
+Pause zählt mit. Bei `LEERLAUF_BIS_AUS = 2` beendet `refillQueueTick` Session
+und Trigger sofort, statt Session (90 min) plus Nachlauf (20 min) auszusitzen.
+Zurück kommt der Trigger beim nächsten Öffnen der App (`handleAufwachen` →
+`ensureTrigger_`, und `triggerLoeschen_` löscht `TRIGGER_HEALED_AT`, der
+nächste Lauf räumt also wieder richtig auf).
+
+**Im Tick wird nicht mehr gesucht.** `refillQueue` hat `maybeRefillPool_`
+verloren (`const resolved = 0`). Notnagel: läuft der Vorrat mitten im Hören
+leer, sucht `topUpQueue_` an der Stelle selbst nach, wo bisher nur
+`keine bereiten Songs im Vorrat` im Protokoll stand. `poolCheckFaellig_` wird
+weiter von `handleAufwachen` benutzt - beim Öffnen der App darf nachgesucht
+werden, das ist kein Hintergrundlauf.
+
+**100 statt 50 Songs pro Playlist** (`PLAYLIST_LAENGE`). 100 ist das Maximum,
+das Spotify in einem `PUT /playlists/{id}/items` annimmt, und rund sechs
+Stunden Musik - bei 50 war an einem langen Abend das Ende der Liste erreicht.
+
+**Abgekühlte Songs aus der älteren Hälfte.** `classifyPool_` sortiert jetzt
+auch `cooled` nach „am längsten nicht gehört zuerst", und `drawFromBucket_`
+zieht daraus nur aus der älteren Hälfte (mindestens 50 Songs). Vorher ging die
+gewichtete Zufallswahl über alle ~1000 abgekühlten - ein gestern gehörter Song
+kam damit genauso oft wie einer vom Frühjahr, was bei 100er-Playlists als
+Wiederholung auffällt. Die halbe Liste bleibt zufällig genug, dass nicht jeden
+Morgen dieselbe Playlist entsteht.
+
+**Zwei neue Endpunkte zum Prüfen:**
+- `?action=vorratTaeglich` - nur die Vorratsarbeit des Morgenlaufs, ohne die
+  Playlists in Spotify neu zu schreiben. Gefahrlos, während Musik läuft.
+- `?action=refreshPlaylists&gruendlich=1` - der komplette Morgenlauf von Hand.
+  Der Knopf in der App schickt `gruendlich` bewusst **nicht** mit, dort wartet
+  jemand auf die Antwort.
+
+Gemessen am 28.10. direkt nach dem Umstellen: 24 Suchen in 19 s, Spoon von 20
+auf 60 frische Songs, SPOON-Playlist 47 nie gehörte von 100 (morgens um 5 noch
+13 von 50), MIX 42 von 100. 1LIVE kommt auf 4 und BAY 1 auf 5 - das ist keine
+Fehlfunktion, die beiden Sender fahren Rotation und spielen praktisch nichts,
+was nicht schon im Sheet steht. Neues Material kommt fast nur von Spoon.
+
 ## Der DJ spielt die Sender-Playlist als Kontext (Backend @131, 26.10.2026)
 **Das ist der Weg, der funktioniert.** Am 26.10. nachgemessen: ein `play` mit
 `context_uri` (einer Playlist) übernimmt die Wiedergabe auch dann, wenn gerade
