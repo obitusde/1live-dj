@@ -77,6 +77,21 @@ auf 60 frische Songs, SPOON-Playlist 47 nie gehörte von 100 (morgens um 5 noch
 Fehlfunktion, die beiden Sender fahren Rotation und spielen praktisch nichts,
 was nicht schon im Sheet steht. Neues Material kommt fast nur von Spoon.
 
+## Spoon bekam keine neuen Songs mehr (Backend @137, 07.11.2026)
+Nutzer: "Spoon-Playlist wird nicht aktualisiert". Ursache: `refillPool_` nahm
+nur Sender in Arbeit, deren frischer Vorrat unter dem Ziel (60) lag. Playlists
+markieren nichts als gespielt, also blieb Spoon ab 28.10. bei genau 60 stehen -
+kein Scrape, keine Suche, 84 neue Radio-Songs lagen ungesucht im Sheet, und die
+Playlist wälzte abwechselnd 13 und 47 alte "frische" Songs um (das Muster
+13/47/13/47 im Log `playlist_gefuellt` war der Hinweis). 1LIVE/BAY 1 fielen
+nicht auf, weil ihr Vorrat durch Rotation ohnehin schwankt.
+
+Fix: `opts.mindestNachlegen` (= `NACHLEGEN_TAEGLICH`, 20) löst pro Sender jeden
+Morgen mindestens so viele neue Songs auf, auch bei vollem Vorrat. Und die
+Playlists ziehen unter den nie gehörten die jüngsten zuerst
+(`drawFromBucket_(…, neuesteZuerst)`), nur dort - der DJ-Fallback bleibt zufällig.
+Danach: Spoon 60 → 80 frische, SPOON-Playlist 67 von 100 nie gehört (vorher 13).
+
 ## Der DJ spielt die Sender-Playlist als Kontext (Backend @131, 26.10.2026)
 **Das ist der Weg, der funktioniert.** Am 26.10. nachgemessen: ein `play` mit
 `context_uri` (einer Playlist) übernimmt die Wiedergabe auch dann, wenn gerade
