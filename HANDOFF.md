@@ -77,6 +77,25 @@ auf 60 frische Songs, SPOON-Playlist 47 nie gehörte von 100 (morgens um 5 noch
 Fehlfunktion, die beiden Sender fahren Rotation und spielen praktisch nichts,
 was nicht schon im Sheet steht. Neues Material kommt fast nur von Spoon.
 
+## Keine Demos, Radio Edits bevorzugt (Backend @141, 14.11.2026)
+Wunsch: "Keine Demo Versionen, idealerweise Radio Edits".
+- `Filter.js`: `istDemoFassung_` (Zusatz hinter Strich/in Klammern: Demo,
+  Rough Mix, Work Tape; Album "Demos") - gleiche Stellen wie Live/Italienisch.
+- `scoreTrackForRadio_`: Radio Edit/Mix/Version/Cut und Single Edit/Version
+  +6 (vorher +3) und ohne Remix-/Edit-Abzug. Radio Edit 17 Punkte, Albumfassung
+  11, Extended -1.
+- **Bestehende Songs** sind damit nicht erfasst: das Sheet kennt nur den
+  Radiotitel. `?action=fassungenPruefen&offset=0&limit=600[&anwenden=1]` schlägt
+  die URIs bei Spotify nach (Demo/Live/Italienisch sowie Länge ab 5:30) und
+  sucht neu. Der Morgenlauf macht davon täglich 200 (`fassungenTaeglich_`,
+  Zeiger `FASSUNG_OFFSET`, am Ende `FASSUNG_FERTIG=1`), ~12 Tage.
+- **Fallstrick Ratenlimit:** Der Mehrfachabruf `/tracks?ids=` geht für dieses
+  Konto nicht, der Einzelabruf `/tracks/{id}` bekam nach ~600 Aufrufen in 2
+  Minuten ein Limit von ~24 h (Retry-After 85382 s, am 14.11. ~12:45 UTC).
+  Suche, Playlists, `/me/player` blieben frei. Der Code wartet jetzt 650 ms
+  zwischen den Aufrufen und bricht beim ersten 429 ab (`wartenS` in der Antwort).
+  Der erste Morgenlauf, der wieder durchkommt, ist der vom 16.11. um 5 Uhr.
+
 ## Spoon bekam keine neuen Songs mehr (Backend @137, 07.11.2026)
 Nutzer: "Spoon-Playlist wird nicht aktualisiert". Ursache: `refillPool_` nahm
 nur Sender in Arbeit, deren frischer Vorrat unter dem Ziel (60) lag. Playlists
