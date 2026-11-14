@@ -1,5 +1,10 @@
 // Service Worker für 1LIVE DJ PWA — nur für Installierbarkeit, kein Offline-Cache
 // (die App ist ohne Netzwerk sowieso nutzlos, sie steuert Spotify per API).
+//
+// Version 2 (14.11.2026): Worker und Manifest gelten nur fuer den eigenen
+// Unterordner (/1live-dj/). Auf obitusde.github.io laufen mehrere Apps; ein
+// Scope auf der ganzen Domain liesse Android deren Links in dieser App oeffnen.
+// Dieser Worker legt keinen Cache an, ein Cache-Praefix ist hier nicht noetig.
 
 self.addEventListener('install', event => {
   self.skipWaiting();

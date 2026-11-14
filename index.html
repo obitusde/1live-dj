@@ -401,8 +401,30 @@ const WAIT_BG_POLL_MS = 10000;  // im Hintergrund (Android drosselt das evtl.)
 // merkt die neueste Folge vor, sie kommt nach dem laufenden Lied; nochmal
 // tippen nimmt sie wieder raus. Die frueheren Dauermodi "Aktuelles" und
 // "Update" sind damit weg - sie wurden kaum benutzt (Nutzer, 25.10.2026).
+// Auf obitusde.github.io teilen sich ALLE Apps denselben Speicher - ein
+// Schluessel wie "sendungen" gehoert also nicht uns allein. Alles hier traegt
+// deshalb das Praefix "dj.". Alte Werte ohne Praefix (Spotify-Anmeldung,
+// Client-ID, Sendungen) werden beim ersten Lesen uebernommen und dann
+// geloescht, damit niemand neu anmelden muss.
+const LS_PRAEFIX = 'dj.';
+function lsLesen(key) {
+  let v = localStorage.getItem(LS_PRAEFIX + key);
+  if (v === null) {
+    const alt = localStorage.getItem(key);
+    if (alt !== null) {
+      try { localStorage.setItem(LS_PRAEFIX + key, alt); localStorage.removeItem(key); } catch (e) {}
+      v = alt;
+    }
+  }
+  return v;
+}
+function lsSchreiben(key, wert) { localStorage.setItem(LS_PRAEFIX + key, wert); }
+function lsLoeschen(key) {
+  localStorage.removeItem(LS_PRAEFIX + key);
+  localStorage.removeItem(key);
+}
 let sendungen = [];
-try { sendungen = JSON.parse(localStorage.getItem('sendungen') || '[]') || []; } catch (e) { sendungen = []; }
+try { sendungen = JSON.parse(lsLesen('sendungen') || '[]') || []; } catch (e) { sendungen = []; }
 // Jeder Tipp belegt seinen Platz SOFORT - mit einem Platzhalter { laedt:true },
 // der ersetzt wird, sobald die Folge da ist. Erst beim Eintreffen einzureihen
 // waere falsch: die Feeds antworten unterschiedlich schnell (Nachrichten 3 s,
@@ -420,7 +442,7 @@ let wartenModus = null;
 // taeglich; der Knopf hier macht es sofort. Gemerkt, damit die Links beim
 // Oeffnen ohne Wartezeit dastehen.
 let playlisten = [];
-try { playlisten = JSON.parse(localStorage.getItem('playlisten') || '[]') || []; } catch (e) { playlisten = []; }
+try { playlisten = JSON.parse(lsLesen('playlisten') || '[]') || []; } catch (e) { playlisten = []; }
 let plSig = '';
 let plLaeuft = false;
 let resumeSeekMs = null;              // 0, wenn der naechste Song von vorne starten soll
@@ -652,7 +674,7 @@ let srvInFlight = null;
 let srvLastTry = 0;
 
 function spLoad() {
-  try { return JSON.parse(localStorage.getItem('spDirect') || 'null'); } catch (e) { return null; }
+  try { return JSON.parse(lsLesen('spDirect') || 'null'); } catch (e) { return null; }
 }
 function spSave(tok, clientId) {
   spAuth = {
@@ -663,11 +685,11 @@ function spSave(tok, clientId) {
     exp: Date.now() + Math.max(60, (tok.expires_in || 3600) - 120) * 1000,
     clientId: clientId || (spAuth && spAuth.clientId)
   };
-  try { localStorage.setItem('spDirect', JSON.stringify(spAuth)); } catch (e) { /* dann eben nur fuer diese Sitzung */ }
+  try { lsSchreiben('spDirect', JSON.stringify(spAuth)); } catch (e) { /* dann eben nur fuer diese Sitzung */ }
 }
 function spDisconnect(grund) {
   spAuth = null;
-  try { localStorage.removeItem('spDirect'); } catch (e) {}
+  try { lsLoeschen('spDirect'); } catch (e) {}
   spNotice = grund || null;
   logEvent('spotify_direkt', 'getrennt', grund || '');
 }
@@ -689,11 +711,11 @@ async function spLogin() {
   logEvent('knopf', 'spotify_verbinden', { redirect: SP_REDIRECT });
   setBusy('Verbinde mit Spotify…');
   let clientId = null;
-  try { clientId = localStorage.getItem('spClientId'); } catch (e) {}
+  try { clientId = lsLesen('spClientId'); } catch (e) {}
   if (!clientId) {
     const r = await api('spotifyClientId');
     clientId = r && r.ok ? r.clientId : null;
-    if (clientId) { try { localStorage.setItem('spClientId', clientId); } catch (e) {} }
+    if (clientId) { try { lsSchreiben('spClientId', clientId); } catch (e) {} }
   }
   if (!clientId) {
     busy = null;
@@ -704,7 +726,7 @@ async function spLogin() {
   const verifier = spRandom(48);
   const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
   const state = spRandom(12);
-  localStorage.setItem('spPkce', JSON.stringify({ verifier: verifier, state: state, clientId: clientId, at: Date.now() }));
+  lsSchreiben('spPkce', JSON.stringify({ verifier: verifier, state: state, clientId: clientId, at: Date.now() }));
   flushLog(true);
   location.href = 'https://accounts.spotify.com/authorize?' + new URLSearchParams({
     response_type: 'code', client_id: clientId, scope: SP_SCOPES, redirect_uri: SP_REDIRECT,
@@ -718,7 +740,7 @@ async function spHandleRedirect() {
   if (!q.has('code') && !q.has('error')) return;
   try { history.replaceState(null, '', location.pathname); } catch (e) {}
   let pk = null;
-  try { pk = JSON.parse(localStorage.getItem('spPkce') || 'null'); localStorage.removeItem('spPkce'); } catch (e) {}
+  try { pk = JSON.parse(lsLesen('spPkce') || 'null'); lsLoeschen('spPkce'); } catch (e) {}
   if (q.get('error')) {
     spNotice = 'Spotify-Anmeldung abgebrochen (' + q.get('error') + ')';
     logEvent('spotify_direkt', 'abgebrochen', q.get('error'));
@@ -1096,7 +1118,7 @@ function ladePlaylists() {
   api('playlists').then(r => {
     if (!r.ok || !r.playlists) return;
     playlisten = r.playlists;
-    try { localStorage.setItem('playlisten', JSON.stringify(playlisten)); } catch (e) {}
+    try { lsSchreiben('playlisten', JSON.stringify(playlisten)); } catch (e) {}
     plSig = ''; renderPlaylists();
   }).catch(() => { /* die gemerkten Links stehen ja schon da */ });
 }
@@ -1115,7 +1137,7 @@ function playlistsAuffrischen() {
     busy = null;
     if (r.ok && r.playlists) {
       playlisten = r.playlists;
-      try { localStorage.setItem('playlisten', JSON.stringify(playlisten)); } catch (e) {}
+      try { lsSchreiben('playlisten', JSON.stringify(playlisten)); } catch (e) {}
       const fehler = (r.ergebnis || []).filter(x => x && x.fehler);
       if (fehler.length) setSoftError('Playlists: ' + fehler[0].fehler, st ? st.phase : 'idle');
     } else if (r.message) {
@@ -1134,7 +1156,7 @@ function ladeSendungen() {
   api('sendungen').then(r => {
     if (!r.ok || !r.sendungen || !r.sendungen.length) return;
     sendungen = r.sendungen;
-    try { localStorage.setItem('sendungen', JSON.stringify(sendungen)); } catch (e) {}
+    try { lsSchreiben('sendungen', JSON.stringify(sendungen)); } catch (e) {}
     showSig = ''; renderShows();
   }).catch(() => { /* die zuletzt gemerkte Liste steht ja schon da */ });
 }
@@ -1189,14 +1211,14 @@ function renderAlert() {
     // Einmaliger Hinweis, solange die Direktverbindung fehlt - ohne sie bleibt
     // die App auf dem langsamen Weg ueber Google.
     let hintWeg = false;
-    try { hintWeg = localStorage.getItem('spHintWeg') === '1'; } catch (e) {}
+    try { hintWeg = lsLesen('spHintWeg') === '1'; } catch (e) {}
     if (!spConnected() && (!hintWeg || spNotice) && !isWaiting()) {
       alertBox.innerHTML = '<div>' + escapeHtml(spNotice || 'Schneller: Spotify direkt mit der App verbinden (einmalig).') + '</div>' +
         '<div class="act"><button id="btnSpConnect">Spotify verbinden</button><button id="btnSpLater">Später</button></div>';
       alertBox.classList.remove('hidden');
       $('btnSpConnect').addEventListener('click', spLogin);
       $('btnSpLater').addEventListener('click', () => {
-        try { localStorage.setItem('spHintWeg', '1'); } catch (e) {}
+        try { lsSchreiben('spHintWeg', '1'); } catch (e) {}
         alertBox.classList.add('hidden');
       });
       return;
@@ -2405,7 +2427,7 @@ setInterval(() => {
   if (Date.now() - lastPollAt > 60000) refresh();
 }, 15000);
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 
 // Die gemerkte Sendungsliste sofort zeichnen (die Knoepfe stehen damit ohne
 // Wartezeit da), danach beim Server nachfragen.

@@ -1,10 +1,10 @@
 {
-  "id": "/1live-dj/",
+  "id": "./",
   "name": "1LIVE DJ",
   "short_name": "1LIVE DJ",
   "description": "Aktuelle Radiomusik von 1LIVE und Bayern 1 über Spotify – mit Wiederholungsschutz",
-  "start_url": "/1live-dj/index.html",
-  "scope": "/1live-dj/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#000000",
